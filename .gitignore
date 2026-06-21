@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+.venv312/
+venv/
+
+# Node
+node_modules/
+frontend/node_modules/
+
+# Build artifacts
+build/
+dist/
+frontend/dist/
+
+# Outputs & temp
+outputs/
+temp/
+tmp/
+
+# Logs
+logs/
+*.log
+
+# Environment
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+
+# Project data
+data/
+cookies.txt
+*.db
+*.sqlite
+*.sqlite3
+
+# Browser automation
+playwright/.auth/
+browser_profiles/
+user_data/
+
+# Media/render outputs
+renders/
+videos/
+exports/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# opencode config
+.opencode/
+
+# Test artifacts
+TEST_INSTALL_INNO/
+src_review.zip
+test_backend_stderr.txt
+test_response.html
+test_result.txt
+test_screenshot.png
+test_multirun/
