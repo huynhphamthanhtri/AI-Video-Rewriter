@@ -895,19 +895,10 @@ export function App() {
             {autoPipelineProgress && !autoRenderStatus && (
               <AutoPipelineProgress progress={autoPipelineProgress} onCancel={handleCancelAutoPipeline} />
             )}
-            {autoRenderStatus && (
-              ['queued', 'running', 'error', 'cancelled'].includes(autoRenderStatus.status)
-                ? <div className="space-y-2">
-                    <ProgressBar status={autoRenderStatus} />
-                    {autoPipelineProgress && (
-                      <button className="btn-mini danger w-full" onClick={handleCancelAutoPipeline}>
-                        Hủy Auto Pipeline
-                      </button>
-                    )}
-                  </div>
-                : autoRenderStatus.status === 'done'
-                ? <RenderResultPanel result={autoRenderStatus.result!} />
-                : null
+            {autoRenderStatus && ['queued', 'running'].includes(autoRenderStatus.status) && autoPipelineProgress && (
+              <button className="btn-mini danger w-full" onClick={handleCancelAutoPipeline}>
+                Hủy Auto Pipeline
+              </button>
             )}
             {prompt && !isAutoPipelineRunning && <div className="mt-4"><div className="mb-2 flex items-center justify-between"><label className="label mb-0">Prompt Gemini</label><button className="btn-mini" onClick={() => navigator.clipboard.writeText(prompt)}><Copy size={14}/>Copy</button></div><textarea className="textarea min-h-[260px]" value={prompt} readOnly/></div>}
             <PromptTelemetryCard />
@@ -998,28 +989,32 @@ function PromptHealthCard({ health }: { health: PromptHealthResponse | null }) {
   if (!health) return null;
   const borderStyle = healthLevelStyles[health.level] ?? healthLevelStyles.weak;
   const label = healthLevelLabels[health.level] ?? 'Không xác định';
+  const [expanded, setExpanded] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
+  const chevron = expanded ? '▼' : '▶';
   return <div className={`mt-5 rounded-2xl border p-4 ${borderStyle}`}>
-    <div className="mb-3 flex items-center justify-between">
+    <button className="flex w-full items-center justify-between gap-2" onClick={() => setExpanded(!expanded)}>
       <h3 className="flex items-center gap-2 text-sm font-bold uppercase tracking-wider">Điểm sức khỏe Prompt</h3>
       <div className="flex items-center gap-2">
         <span className="text-2xl font-black">{health.score}</span>
         <span className="rounded-md px-2 py-0.5 text-xs font-semibold uppercase" style={{ backgroundColor: 'rgba(0,0,0,0.3)' }}>{label}</span>
+        <span className="text-xs text-slate-500">{chevron}</span>
       </div>
-    </div>
-    {health.strengths.length > 0 && <div className="mb-2 space-y-1">{health.strengths.map((s, i) => <div key={i} className="flex items-start gap-2 text-sm"><span className="mt-0.5 shrink-0">✅</span><span>{s}</span></div>)}</div>}
-    {health.warnings.length > 0 && <div className="space-y-1">{health.warnings.map((w, i) => <div key={i} className="flex items-start gap-2 text-sm"><span className="mt-0.5 shrink-0">⚠️</span><span>{w}</span></div>)}</div>}
-    {health.details && health.details.length > 0 && (
-      <>
-        <button
-          className="mt-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400 hover:text-slate-200"
-          onClick={() => setShowDetails(!showDetails)}
-        >
-          {showDetails ? 'Ẩn' : 'Xem'} chi tiết điểm số ({health.details.length} yếu tố)
-        </button>
-        {showDetails && (
-          <div className="mt-3 overflow-x-auto rounded-xl border border-white/10 bg-slate-950/40">
-            <table className="w-full text-xs">
+    </button>
+    {expanded && (<>
+      {health.strengths.length > 0 && <div className="mb-2 mt-3 space-y-1">{health.strengths.map((s, i) => <div key={i} className="flex items-start gap-2 text-sm"><span className="mt-0.5 shrink-0">✅</span><span>{s}</span></div>)}</div>}
+      {health.warnings.length > 0 && <div className="space-y-1">{health.warnings.map((w, i) => <div key={i} className="flex items-start gap-2 text-sm"><span className="mt-0.5 shrink-0">⚠️</span><span>{w}</span></div>)}</div>}
+      {health.details && health.details.length > 0 && (
+        <>
+          <button
+            className="mt-3 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-slate-400 hover:text-slate-200"
+            onClick={() => setShowDetails(!showDetails)}
+          >
+            {showDetails ? 'Ẩn' : 'Xem'} chi tiết điểm số ({health.details.length} yếu tố)
+          </button>
+          {showDetails && (
+            <div className="mt-3 overflow-x-auto rounded-xl border border-white/10 bg-slate-950/40">
+              <table className="w-full text-xs">
               <thead>
                 <tr className="border-b border-white/10 text-left text-slate-500">
                   <th className="px-3 py-2">Yếu tố</th>
@@ -1041,10 +1036,11 @@ function PromptHealthCard({ health }: { health: PromptHealthResponse | null }) {
                 ))}
               </tbody>
             </table>
-          </div>
-        )}
-      </>
-    )}
+            </div>
+          )}
+        </>
+      )}
+    </>)}
   </div>;
 }
 

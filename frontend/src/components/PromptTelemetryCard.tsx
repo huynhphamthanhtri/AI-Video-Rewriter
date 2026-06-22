@@ -7,6 +7,7 @@ import { Activity } from 'lucide-react';
 export function PromptTelemetryCard() {
   const [stats, setStats] = useState<PromptRunStats | null>(null);
   const [loading, setLoading] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
 
   useEffect(() => {
     setLoading(true);
@@ -21,7 +22,11 @@ export function PromptTelemetryCard() {
   return (
     <div className="mt-6">
       <Card>
-        <SectionTitle icon={Activity} title="Usage Stats" desc="Prompt generation analytics" />
+        <button className="flex w-full items-center justify-between gap-2" onClick={() => setCollapsed(!collapsed)}>
+          <SectionTitle icon={Activity} title="Usage Stats" desc="Prompt generation analytics" />
+          <span className="text-xs text-slate-500">{collapsed ? '▶' : '▼'}</span>
+        </button>
+        {!collapsed && (<>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
           <StatBox label="Total" value={stats.total_runs} />
           <StatBox label="Success" value={stats.success_count} />
@@ -67,6 +72,7 @@ export function PromptTelemetryCard() {
           <span className="mr-4">Last 7d: {stats.last_7d_count}</span>
           <span>Prev 7d: {stats.prev_7d_count}</span>
         </div>
+        </>)}
       </Card>
     </div>
   );

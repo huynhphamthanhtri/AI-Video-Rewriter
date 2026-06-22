@@ -56,34 +56,48 @@ export function AutoPipelineProgress({
       </div>
 
       <div className="space-y-2">
-        {allStates.map((state, idx) => {
+        {allStates.reduce<{ step: string; status: string; idx: number; label: string; desc: string; retryCount: number }[]>((acc, state, idx) => {
           const info = STEP_LABELS[state.step] ?? { label: state.label, desc: '' };
-          return (
-            <div
-              key={`${state.step}-${idx}`}
-              className={`flex items-center gap-3 rounded-xl p-3 transition-colors ${
-                state.status === 'running' ? 'border border-violet-400/30 bg-violet-500/10' : ''
-              }`}
-            >
-              <StepIcon step={state.step} status={state.status} />
-              <div className="min-w-0 flex-1">
-                <p className={`text-sm font-semibold ${
-                  state.status === 'error' ? 'text-red-300'
-                  : state.status === 'running' ? 'text-violet-200'
-                  : 'text-slate-300'
-                }`}>
-                  {info.label}
-                </p>
-                <p className="text-xs text-slate-400">
-                  {state.status === 'running' ? progress.message ?? info.desc
-                   : state.status === 'done' ? 'Hoàn thành'
-                   : state.status === 'error' ? progress.error ?? info.desc
-                   : info.desc}
-                </p>
-              </div>
+          if (state.step === 'auto_retry') {
+            const last = acc[acc.length - 1];
+            if (last?.step === 'auto_retry') {
+              last.retryCount++;
+              last.status = state.status;
+              return acc;
+            }
+          }
+          acc.push({ step: state.step, status: state.status, idx, label: info.label, desc: info.desc, retryCount: 1 });
+          return acc;
+        }, []).map((item) => (
+          <div
+            key={`${item.step}-${item.idx}`}
+            className={`flex items-center gap-3 rounded-xl p-3 transition-colors ${
+              item.status === 'running' ? 'border border-violet-400/30 bg-violet-500/10' : ''
+            }`}
+          >
+            <StepIcon step={item.step} status={item.status} />
+            <div className="min-w-0 flex-1">
+              <p className={`text-sm font-semibold ${
+                item.status === 'error' ? 'text-red-300'
+                : item.status === 'running' ? 'text-violet-200'
+                : 'text-slate-300'
+              }`}>
+                {item.label}
+                {item.retryCount > 1 && (
+                  <span className="ml-2 rounded-full bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-300">
+                    {item.retryCount} lần
+                  </span>
+                )}
+              </p>
+              <p className="text-xs text-slate-400">
+                {item.status === 'running' ? progress.message ?? item.desc
+                 : item.status === 'done' ? 'Hoàn thành'
+                 : item.status === 'error' ? progress.error ?? item.desc
+                 : item.desc}
+              </p>
             </div>
-          );
-        })}
+          </div>
+        ))}
       </div>
 
       {!!((progress.detail as Record<string, unknown>)?.login_required) && (
