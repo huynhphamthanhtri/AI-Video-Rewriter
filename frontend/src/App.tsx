@@ -406,7 +406,11 @@ export function App() {
 
   async function pollAutoRenderJob(jobId: string) {
     autoRenderPollCancelledRef.current = false;
-    setAutoRenderStatus({ job_id: jobId, status: 'queued', step: 'Auto Render', message: 'Pipeline hoàn tất, đang chờ render...', progress: 0, completed_segments: 0, total_segments: null, started_at: null, updated_at: null, elapsed_seconds: null, estimated_total_seconds: null, remaining_seconds: null, result: null, errors: [] });
+    const initial = { job_id: jobId, status: 'queued', step: 'Auto Render', message: 'Pipeline hoàn tất, đang chờ render...', progress: 0, completed_segments: 0, total_segments: null, started_at: null, updated_at: null, elapsed_seconds: null, estimated_total_seconds: null, remaining_seconds: null, result: null, errors: [] } satisfies RenderJobStatus;
+    setAutoRenderStatus(initial);
+    setRenderStatus(initial);
+    setRenderSteps(stepsFromProgress(initial));
+    setIsRendering(true);
     while (!autoRenderPollCancelledRef.current) {
       await new Promise(resolve => setTimeout(resolve, 2000));
       if (autoRenderPollCancelledRef.current) break;
@@ -414,7 +418,10 @@ export function App() {
         const status = await fetchRenderJob(jobId);
         if (autoRenderPollCancelledRef.current) break;
         setAutoRenderStatus(status);
+        setRenderStatus(status);
+        setRenderSteps(stepsFromProgress(status));
         if (status.status === 'done') {
+          setIsRendering(false);
           toast.success('Render hoàn tất!');
           if (renderDoneBell) playRenderDoneBell();
           const originalTitle = document.title;
@@ -422,8 +429,8 @@ export function App() {
           window.setTimeout(() => { document.title = originalTitle; }, 8000);
           break;
         }
-        if (status.status === 'cancelled') { toast.warning('Render đã bị hủy'); break; }
-        if (status.status === 'error') { toast.error(status.message); break; }
+        if (status.status === 'cancelled') { setIsRendering(false); toast.warning('Render đã bị hủy'); break; }
+        if (status.status === 'error') { setIsRendering(false); toast.error(status.message); break; }
       } catch {
         // network error, continue polling
       }
@@ -624,6 +631,7 @@ export function App() {
     setAutoPipelineProgress(null);
     setAutoRenderStatus(null);
     setIsAutoPipelineRunning(false);
+    setIsRendering(false);
     cancelAutoPipeline(taskId).catch(() => {});
     toast.warning('Đã hủy auto pipeline');
   }
@@ -876,7 +884,7 @@ export function App() {
               <AutoPipelineProgress progress={autoPipelineProgress} onCancel={handleCancelAutoPipeline} />
             )}
             {autoRenderStatus && (
-              ['queued', 'running'].includes(autoRenderStatus.status)
+              ['queued', 'running', 'error', 'cancelled'].includes(autoRenderStatus.status)
                 ? <ProgressBar status={autoRenderStatus} />
                 : autoRenderStatus.status === 'done'
                 ? <RenderResultPanel result={autoRenderStatus.result!} />
