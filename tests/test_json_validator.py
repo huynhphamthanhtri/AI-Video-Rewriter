@@ -1,4 +1,5 @@
 from app.services.json_validator import JsonValidator
+from app.schemas.render import RenderOptions
 
 
 def valid_payload():
@@ -58,6 +59,33 @@ def test_validate_json_auto_fix_duration_mismatch():
     payload = valid_payload()
     payload["video_segments"][0]["source_end"] = "00:00:40.000"
     valid, errors, model, fixed_payload = JsonValidator().validate_with_auto_fix(payload)
+    assert valid is True
+    assert model is not None
+    assert fixed_payload is not None
+    assert fixed_payload["video_segments"][0]["source_end"] == "00:00:03.000"
+    assert errors[0].startswith("AUTO FIX")
+
+
+def test_validate_json_tts_hybrid_skips_duration_auto_fix():
+    payload = valid_payload()
+    payload["video_segments"][0]["source_end"] = "00:00:40.000"
+    options = RenderOptions(tts_mode="voiceover", tts_fit_policy="hybrid")
+
+    valid, errors, model, fixed_payload = JsonValidator().validate_with_auto_fix(payload, render_options=options)
+
+    assert valid is False
+    assert model is None
+    assert fixed_payload is None
+    assert any("thời lượng 40.0 giây" in error for error in errors)
+
+
+def test_validate_json_tts_segment_uniform_keeps_duration_auto_fix():
+    payload = valid_payload()
+    payload["video_segments"][0]["source_end"] = "00:00:40.000"
+    options = RenderOptions(tts_mode="voiceover", tts_fit_policy="segment_uniform")
+
+    valid, errors, model, fixed_payload = JsonValidator().validate_with_auto_fix(payload, render_options=options)
+
     assert valid is True
     assert model is not None
     assert fixed_payload is not None

@@ -19,7 +19,7 @@ BlurMode = Literal["none", "review"]
 TtsMode = Literal["none", "voiceover"]
 TtsEngine = Literal["vieneu_turbo"]
 TtsEmotion = Literal["natural", "storytelling"]
-TtsFitPolicy = Literal["segment_uniform"]
+TtsFitPolicy = Literal["hybrid", "segment_uniform", "extend_video", "speed_up_voice"]
 TtsLanguage = Literal["auto", "vi", "en", "vi_en"]
 TtsPersona = Literal["neutral", "sports_commentator", "drama_storyteller", "news_anchor", "funny_reviewer", "podcast_host"]
 TtsVoiceRegion = Literal["auto", "vi_north", "vi_south"]
@@ -67,6 +67,18 @@ def seconds_to_clip_timestamp(value: float) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}.{ms:03d}"
 
 
+def seconds_to_srt_timestamp(value: float) -> str:
+    safe_value = max(0.0, value)
+    total_ms = int(round(safe_value * 1000))
+    ms = total_ms % 1000
+    total_seconds = total_ms // 1000
+    seconds = total_seconds % 60
+    total_minutes = total_seconds // 60
+    minutes = total_minutes % 60
+    hours = total_minutes // 60
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{ms:03d}"
+
+
 class MetadataSchema(BaseModel):
     video_title: str
     rewrite_style: str
@@ -96,6 +108,9 @@ class SrtItemSchema(TimestampedSrtModel):
     text: str
 
 
+MAX_FREEZE_FRAME_SECONDS = 3.0
+
+
 class VideoSegmentSchema(BaseModel):
     segment_id: int = Field(ge=1)
     order: int = Field(ge=1)
@@ -106,6 +121,7 @@ class VideoSegmentSchema(BaseModel):
     subtitle_end: int = Field(ge=1)
     scene_description: str
     importance_score: int = Field(ge=0, le=100)
+    freeze_frame_duration: float | None = None
 
     @model_validator(mode="after")
     def validate_segment_range(self) -> "VideoSegmentSchema":
@@ -118,6 +134,20 @@ class VideoSegmentSchema(BaseModel):
     @property
     def duration_seconds(self) -> float:
         return clip_timestamp_to_seconds(self.source_end) - clip_timestamp_to_seconds(self.source_start)
+
+
+class SegmentPlanItem(BaseModel):
+    segment_id: int
+    scene_duration: float
+    natural_voice_duration: float
+    required_duration: float
+    extend_seconds: float
+    decision: str
+    source_id: str
+    source_remaining_seconds: float
+    speed_factor: float = 1.0
+    freeze_duration: float | None = None
+    warning: str = ""
 
 
 class GeminiPayloadSchema(BaseModel):
@@ -215,7 +245,7 @@ class RenderOptions(BaseModel):
     tts_voice_mode: TtsVoiceMode = "preset"
     tts_clone_voice_id: str = ""
     tts_emotion: TtsEmotion = "natural"
-    tts_fit_policy: TtsFitPolicy = "segment_uniform"
+    tts_fit_policy: TtsFitPolicy = "hybrid"
     tts_max_speed: float = Field(default=1.5, ge=1.0, le=2.0)
     tts_temperature: float = Field(default=0.4, ge=0.1, le=1.2)
     tts_top_k: int = Field(default=50, ge=1, le=200)

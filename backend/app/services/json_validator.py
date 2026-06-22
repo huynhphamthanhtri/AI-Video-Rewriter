@@ -5,7 +5,7 @@ import re
 
 from pydantic import ValidationError
 
-from app.schemas.render import GeminiPayloadSchema, clip_timestamp_to_seconds, seconds_to_clip_timestamp, srt_timestamp_to_seconds
+from app.schemas.render import GeminiPayloadSchema, RenderOptions, clip_timestamp_to_seconds, seconds_to_clip_timestamp, srt_timestamp_to_seconds
 
 
 ACTION_CONNECTORS = {"then", "and", "after", "before", "finally", "next", "but", "while", "rồi", "sau đó", "tiếp theo"}
@@ -23,7 +23,7 @@ class JsonValidator:
         except ValueError as exc:
             return False, [str(exc)], None
 
-    def validate_with_auto_fix(self, payload: object) -> tuple[bool, list[str], GeminiPayloadSchema | None, dict | None]:
+    def validate_with_auto_fix(self, payload: object, render_options: RenderOptions | dict | None = None) -> tuple[bool, list[str], GeminiPayloadSchema | None, dict | None]:
         try:
             normalized_payload = self.normalize_payload(payload)
         except ValueError as exc:
@@ -33,7 +33,7 @@ class JsonValidator:
         if valid:
             return True, [], model, normalized_payload
 
-        fixed_payload = self.auto_fix_payload(normalized_payload)
+        fixed_payload = self.auto_fix_payload(normalized_payload, render_options=render_options)
         fixed_valid, fixed_errors, fixed_model = self.validate(fixed_payload)
         if fixed_valid:
             return True, ["AUTO FIX: Đã trim/kéo dài source_end của video_segments để khớp thời lượng subtitle."], fixed_model, fixed_payload
@@ -89,11 +89,24 @@ class JsonValidator:
             return match.group(1).strip()
         return cleaned
 
-    def auto_fix_payload(self, payload: dict) -> dict:
+    def auto_fix_payload(self, payload: dict, render_options: RenderOptions | dict | None = None) -> dict:
         fixed_payload = self._deepcopy_payload(payload)
         self._auto_fix_sources(fixed_payload)
         self._auto_fix_duplicates_and_sort(fixed_payload)
+        if self._skip_duration_auto_fix(render_options):
+            return fixed_payload
         return self.auto_fix_duration_mismatch(fixed_payload)
+
+    def _skip_duration_auto_fix(self, render_options: RenderOptions | dict | None) -> bool:
+        if render_options is None:
+            return False
+        if isinstance(render_options, dict):
+            tts_mode = render_options.get("tts_mode")
+            tts_fit_policy = render_options.get("tts_fit_policy", "hybrid")
+        else:
+            tts_mode = render_options.tts_mode
+            tts_fit_policy = render_options.tts_fit_policy
+        return tts_mode == "voiceover" and tts_fit_policy != "segment_uniform"
 
     def auto_fix_duration_mismatch(self, payload: dict) -> dict:
         fixed_payload = self._deepcopy_payload(payload)

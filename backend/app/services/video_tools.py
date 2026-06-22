@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Callable
 
 from app.core.config import settings
-from app.schemas.render import GeminiPayloadSchema, RenderOptions, SourceSchema, clip_timestamp_to_seconds
+from app.schemas.render import GeminiPayloadSchema, MAX_FREEZE_FRAME_SECONDS, RenderOptions, SourceSchema, SegmentPlanItem, clip_timestamp_to_seconds, seconds_to_clip_timestamp, seconds_to_srt_timestamp, srt_timestamp_to_seconds
 from app.services.title_layout import _title_font_path, compute_title_layout
 
 
@@ -304,6 +304,40 @@ def _ensure_path_under(path: Path, root: Path, label: str) -> Path:
     return path
 
 
+def _segment_plan_to_dict(plan: SegmentPlanItem) -> dict[str, object]:
+    d = plan.model_dump()
+    d["original_scene_duration"] = d.pop("scene_duration")
+    d["final_scene_duration"] = d.pop("required_duration")
+    return d
+
+
+def _apply_segment_plan_to_payload(payload: GeminiPayloadSchema, segment_plans: list[SegmentPlanItem], srt_shifts: dict[int, float]) -> None:
+    plan_by_seg = {p.segment_id: p for p in segment_plans}
+
+    for seg in payload.video_segments:
+        p = plan_by_seg.get(seg.segment_id)
+        if p and p.extend_seconds > 0:
+            if p.decision == "footage_extend":
+                current_end = clip_timestamp_to_seconds(seg.source_end)
+                seg.source_end = seconds_to_clip_timestamp(current_end + p.extend_seconds)
+            if p.freeze_duration:
+                seg.freeze_frame_duration = p.freeze_duration
+
+    for cue in payload.srt:
+        shift = srt_shifts.get(cue.index, 0.0)
+        if shift > 0:
+            cue.start = seconds_to_srt_timestamp(srt_timestamp_to_seconds(cue.start) + shift)
+            cue.end = seconds_to_srt_timestamp(srt_timestamp_to_seconds(cue.end) + shift)
+
+    for seg in payload.video_segments:
+        p = plan_by_seg.get(seg.segment_id)
+        if p and p.extend_seconds > 0:
+            last_cue = next((c for c in payload.srt if c.index == seg.subtitle_end), None)
+            if last_cue:
+                new_end = srt_timestamp_to_seconds(last_cue.end) + p.extend_seconds
+                last_cue.end = seconds_to_srt_timestamp(new_end)
+
+
 def validate_request_cookies_file(value: str | None) -> str | None:
     if not value:
         return None
@@ -487,22 +521,34 @@ class VideoCutter:
             if duration <= 0:
                 raise RuntimeError(f"Segment #{segment.segment_id} có duration không hợp lệ.")
 
+            freeze_dur = segment.freeze_frame_duration or 0.0
+            vf_parts = [f"fps={segment_fps}", "setpts=PTS-STARTPTS", "setsar=1"]
+            if freeze_dur > 0:
+                vf_parts.insert(0, f"tpad=stop_mode=clone:stop_duration={freeze_dur:.3f}")
+
             def build_cmd(profile: EncoderProfile) -> list[str]:
-                return [
+                cmd = [
                     settings.ffmpeg_binary,
                     "-y",
                     "-ss",
                     segment.source_start,
+                ]
+                if freeze_dur > 0:
+                    cmd.extend(["-t", f"{duration:.3f}"])
+                cmd.extend([
                     "-i",
                     str(source_path),
-                    "-t",
-                    f"{duration:.3f}",
+                ])
+                if freeze_dur <= 0:
+                    cmd.extend(["-t", f"{duration:.3f}"])
+                return [
+                    *cmd,
                     "-map",
                     "0:v:0",
                     "-map",
                     "0:a?",
                     "-vf",
-                    f"fps={segment_fps},setpts=PTS-STARTPTS,setsar=1",
+                    ",".join(vf_parts),
                     "-af",
                     "aresample=async=1:first_pts=0",
                     *video_encoder_args(profile, quality),
@@ -890,6 +936,33 @@ class RenderPipeline:
         if progress_callback:
             progress_callback({"step": "Prepare sources", "message": "Đã chuẩn bị xong tất cả video nguồn.", "progress": 30, "phase": "download_sources", "phase_progress": 1.0})
 
+        # ── TTS pre-processing: generate natural TTS, SegmentPlanner, update payload ──
+        tts_segment_plans: list[SegmentPlanItem] = []
+        segment_speeds: dict[int | None, float] = {}
+        srt_shifts: dict[int, float] = {}
+        if options.tts_mode == "voiceover":
+            from app.services.tts_tools import TtsVoiceoverService
+            from app.services.segment_planner import SegmentPlanner
+
+            if progress_callback:
+                progress_callback({"step": "Generate TTS", "message": "Đang tạo TTS tự nhiên (không speed)...", "progress": 30, "phase": "tts_natural", "phase_progress": 0.0})
+            natural_durations, _ = TtsVoiceoverService().generate_natural_tts(
+                payload, output_dir, workspace_dir, options,
+                progress_callback=progress_callback, cancel_callback=cancel_callback,
+            )
+
+            source_durations: dict[str, float] = {}
+            for sid, spath in source_paths.items():
+                meta = probe_video_metadata(spath)
+                source_durations[sid] = float(meta.get("duration_seconds") or 0.0)
+
+            planner = SegmentPlanner()
+            tts_segment_plans = planner.plan(payload, options, natural_durations, source_durations)
+            srt_shifts = planner.compute_srt_shifts(tts_segment_plans, payload)
+            segment_speeds = {p.segment_id: p.speed_factor for p in tts_segment_plans}
+
+            _apply_segment_plan_to_payload(payload, tts_segment_plans, srt_shifts)
+
         clips_dir = workspace_dir / "segments"
         if cancel_callback:
             cancel_callback()
@@ -931,6 +1004,8 @@ class RenderPipeline:
             render_plan_payload["subtitle_mode"] = effective_subtitle_mode
             render_plan_payload["source_files"] = {source_id: str(path) for source_id, path in source_paths.items()}
             render_plan_payload["pending_blur_review"] = True
+            if tts_segment_plans:
+                render_plan_payload["segment_plan"] = [_segment_plan_to_dict(p) for p in tts_segment_plans]
             render_plan.write_text(json.dumps(render_plan_payload, ensure_ascii=False, indent=2), encoding="utf-8")
             return {
                 "requires_blur_decision": "True",
@@ -956,9 +1031,13 @@ class RenderPipeline:
             from app.services.tts_tools import TtsVoiceoverService
 
             if progress_callback:
-                progress_callback({"step": "TTS voiceover", "message": "Đang tạo và mix voiceover VieNeu Turbo...", "progress": 90, "phase": "tts_generate", "phase_progress": 0.0})
+                progress_callback({"step": "TTS voiceover", "message": "Đang hoàn thiện voiceover (áp dụng speed)...", "progress": 90, "phase": "tts_build", "phase_progress": 0.0})
             video_duration = float(probe_video_metadata(subtitle_input_video).get("duration_seconds") or 0)
-            tts_result = TtsVoiceoverService().generate_voiceover(payload, output_dir, workspace_dir, options, video_duration, progress_callback=progress_callback, cancel_callback=cancel_callback)
+            tts_result = TtsVoiceoverService().generate_voiceover(
+                payload, output_dir, workspace_dir, options, video_duration,
+                progress_callback=progress_callback, cancel_callback=cancel_callback,
+                segment_speeds=segment_speeds if segment_speeds else None,
+            )
             tts_mixed_video = output_dir / f"{prefix}_tts_mixed.mp4"
             TtsVoiceoverService().mix_voiceover(subtitle_input_video, Path(tts_result["voiceover_path"]), tts_mixed_video, options)
             if progress_callback:
@@ -1022,6 +1101,8 @@ class RenderPipeline:
             render_plan_payload["tts"] = tts_result
         if title_result:
             render_plan_payload["title_overlay"] = title_result
+        if tts_segment_plans:
+            render_plan_payload["segment_plan"] = [_segment_plan_to_dict(p) for p in tts_segment_plans]
         source_probe_path = next(iter(source_paths.values()), source)
         source_metadata = probe_video_metadata(source_probe_path)
         output_metadata = probe_video_metadata(final_video)

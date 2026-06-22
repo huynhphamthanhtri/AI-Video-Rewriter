@@ -4,6 +4,7 @@ import json
 import math
 import os
 import re
+import shutil
 import time
 import uuid
 import subprocess
@@ -241,7 +242,9 @@ class TtsVoiceoverService:
             parts.append(current)
         return parts or [text]
 
-    def generate_voiceover(self, payload: GeminiPayloadSchema, output_dir: Path, workspace_dir: Path, options: RenderOptions, video_duration: float, progress_callback=None, cancel_callback=None) -> dict[str, Any]:
+    def generate_natural_tts(self, payload: GeminiPayloadSchema, output_dir: Path, workspace_dir: Path, options: RenderOptions, progress_callback=None, cancel_callback=None) -> tuple[dict[int, float], list[tuple[Path, float, int | None]]]:
+        """Generate TTS per cue, apply silence removal only, probe natural duration.
+        Returns: {cue_index: natural_duration_seconds}, [(fitted_path, start_seconds, segment_id), ...]"""
         if options.tts_engine != "vieneu_turbo":
             raise RuntimeError(f"TTS engine chưa hỗ trợ: {options.tts_engine}")
         tts_dir = workspace_dir / "tts"
@@ -253,25 +256,21 @@ class TtsVoiceoverService:
             progress_callback({"step": "Generate TTS", "message": "Đang load VieNeu Turbo và tạo voiceover theo SRT...", "progress": 90, "phase": "tts_generate", "phase_progress": 0.0})
         synth = VieneuTurboSynthesizer(options.tts_emotion)
         voice_data = resolve_vieneu_voice(options)
-        clone_meta: dict[str, Any] | None = None
         clone_embedding: Path | None = None
         if options.tts_voice_mode == "clone":
             if not options.tts_clone_voice_id:
                 raise RuntimeError("Bạn chưa chọn cloned voice.")
-            clone_meta = get_cloned_voice(options.tts_clone_voice_id)
             clone_embedding = clone_voice_embedding_path(options.tts_clone_voice_id)
             if not clone_embedding.exists():
                 raise RuntimeError("Không tìm thấy embedding của cloned voice.")
         cue_to_segment = self._cue_segment_map(payload)
-        required_by_segment: dict[int | None, list[float]] = {}
-        generated: list[dict[str, Any]] = []
+        natural_durations: dict[int, float] = {}
+        natural_paths: list[tuple[Path, float, int | None]] = []
         total = max(1, len(payload.srt))
         for pos, cue in enumerate(payload.srt, start=1):
             if cancel_callback:
                 cancel_callback()
             start = srt_timestamp_to_seconds(cue.start)
-            end = srt_timestamp_to_seconds(cue.end)
-            slot = max(0.05, end - start)
             segment_id = cue_to_segment.get(cue.index)
             raw_text = normalize_text_for_vietnamese_tts(cue.text)
             sub_texts = self._split_long_cue(raw_text, options.tts_max_chars)
@@ -295,60 +294,87 @@ class TtsVoiceoverService:
                     for p in raw_paths:
                         f.write(f"file '{p}'\n")
                 _run([settings.ffmpeg_binary, "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list), "-c", "copy", str(raw_path)])
-            generated_duration = probe_audio_duration(raw_path) or total_generated_duration
-            required_speed = max(1.0, generated_duration / slot) if generated_duration > 0 else 1.0
-            required_by_segment.setdefault(segment_id, []).append(required_speed)
-            generated.append({"cue": cue, "raw_path": raw_path, "start": start, "end": end, "slot": slot, "segment_id": segment_id, "generated_duration": generated_duration})
+            # Apply silence removal only — NO speed, NO atrim
+            natural_path = fitted_dir / f"cue_{cue.index:04d}.wav"
+            silence_filter = "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-50dB,areverse,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-50dB,areverse,asetpts=PTS-STARTPTS"
+            _run([settings.ffmpeg_binary, "-y", "-i", str(raw_path), "-af", silence_filter, "-ar", "48000", "-ac", "2", str(natural_path)])
+            natural_duration = probe_audio_duration(natural_path)
+            natural_durations[cue.index] = natural_duration
+            natural_paths.append((natural_path, start, segment_id))
             if progress_callback:
                 progress_callback({"step": "Generate TTS", "message": f"Đang tạo TTS {pos}/{total}...", "progress": 90 + int((pos / total) * 3), "phase": "tts_generate", "phase_progress": pos / total})
-        generated.sort(key=lambda x: x["start"])
-        for i in range(len(generated) - 1):
-            curr = generated[i]
-            next_start = generated[i + 1]["start"]
-            curr_end = curr["start"] + curr["slot"]
-            overlap = curr_end - next_start
-            if overlap > 0.1:
-                curr["slot"] = max(0.05, next_start - curr["start"] - 0.01)
-        required_by_segment = {}
-        for item in generated:
-            sid = item["segment_id"]
-            req = max(1.0, item["generated_duration"] / item["slot"]) if item["generated_duration"] > 0 else 1.0
-            required_by_segment.setdefault(sid, []).append(req)
-        segment_speeds = {segment_id: min(max(_percentile(values, 90), 1.0), options.tts_max_speed) for segment_id, values in required_by_segment.items()}
+        natural_paths.sort(key=lambda x: x[1])
+        return natural_durations, natural_paths
+
+    def generate_voiceover(self, payload: GeminiPayloadSchema, output_dir: Path, workspace_dir: Path, options: RenderOptions, video_duration: float, progress_callback=None, cancel_callback=None, segment_speeds: dict[int | None, float] | None = None) -> dict[str, Any]:
+        if options.tts_engine != "vieneu_turbo":
+            raise RuntimeError(f"TTS engine chưa hỗ trợ: {options.tts_engine}")
+        tts_dir = workspace_dir / "tts"
+        fitted_dir = tts_dir / "fitted"
+        # If natural TTS not yet generated, do it now
+        natural_path = fitted_dir / "cue_0001.wav"
+        if not natural_path.exists():
+            self.generate_natural_tts(payload, output_dir, workspace_dir, options, progress_callback=progress_callback, cancel_callback=cancel_callback)
+        # Re-read fitted paths from disk
+        cue_to_segment = self._cue_segment_map(payload)
+        items: list[dict[str, Any]] = []
+        for cue in payload.srt:
+            start = srt_timestamp_to_seconds(cue.start)
+            segment_id = cue_to_segment.get(cue.index)
+            path = fitted_dir / f"cue_{cue.index:04d}.wav"
+            dur = probe_audio_duration(path)
+            items.append({"cue": cue, "path": path, "start": start, "segment_id": segment_id, "natural_duration": dur})
+        items.sort(key=lambda x: x["start"])
+        # Compute segment speeds if not provided
+        if segment_speeds is None:
+            required_by_segment: dict[int | None, list[float]] = {}
+            for item in items:
+                slot = max(0.05, srt_timestamp_to_seconds(item["cue"].end) - srt_timestamp_to_seconds(item["cue"].start))
+                req = max(1.0, item["natural_duration"] / slot) if item["natural_duration"] > 0 else 1.0
+                required_by_segment.setdefault(item["segment_id"], []).append(req)
+            segment_speeds = {seg_id: min(max(_percentile(values, 90), 1.0), options.tts_max_speed) for seg_id, values in required_by_segment.items()}
+        # Overlap detection (same as before)
+        for i in range(len(items) - 1):
+            curr = items[i]
+            next_start = items[i + 1]["start"]
+            curr_slot = max(0.05, srt_timestamp_to_seconds(curr["cue"].end) - srt_timestamp_to_seconds(curr["cue"].start))
+            curr_end = curr["start"] + curr_slot
+            if curr_end - next_start > 0.1:
+                items[i]["overlap_adjusted"] = True
+        # Apply speed to natural audio — build final fitted files
         plans: list[TtsCuePlan] = []
         fitted_paths: list[tuple[Path, float]] = []
-        for item in generated:
+        for item in items:
             if cancel_callback:
                 cancel_callback()
             speed = segment_speeds.get(item["segment_id"], 1.0)
-            fitted_path = fitted_dir / f"cue_{item['cue'].index:04d}.wav"
-            speed_filter = _atempo_filter(speed)
-            silence_filter = "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-50dB,areverse,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-50dB,areverse"
-            fit_filters = f"{silence_filter},{speed_filter},asetpts=PTS-STARTPTS"
-            _run([settings.ffmpeg_binary, "-y", "-i", str(item["raw_path"]), "-af", fit_filters, "-ar", "48000", "-ac", "2", str(fitted_path)])
-            final_duration = probe_audio_duration(fitted_path)
-            overflow = final_duration > item["slot"]
+            final_path = fitted_dir / f"cue_{item['cue'].index:04d}_final.wav"
+            if speed > 1.0:
+                speed_filter = _atempo_filter(speed)
+                _run([settings.ffmpeg_binary, "-y", "-i", str(item["path"]), "-af", f"{speed_filter},asetpts=PTS-STARTPTS", "-ar", "48000", "-ac", "2", str(final_path)])
+            else:
+                if item["path"] != final_path:
+                    shutil.copy2(str(item["path"]), str(final_path))
+            final_duration = probe_audio_duration(final_path)
+            slot = max(0.05, srt_timestamp_to_seconds(item["cue"].end) - srt_timestamp_to_seconds(item["cue"].start))
+            overflow = final_duration > slot
+            warning = ""
             if overflow:
-                trim_path = fitted_dir / f"cue_{item['cue'].index:04d}_trim.wav"
-                _run([settings.ffmpeg_binary, "-y", "-i", str(fitted_path), "-af", f"atrim=0:{item['slot']:.3f},asetpts=PTS-STARTPTS", "-ar", "48000", "-ac", "2", str(trim_path)])
-                os.replace(str(trim_path), str(fitted_path))
-                final_duration = probe_audio_duration(fitted_path)
-            overflow_final = final_duration > item["slot"]
-            warning = "TTS_OVERFLOW: audio vẫn dài hơn slot sau khi ép tốc độ; đã trim để tránh overlap." if overflow_final else ""
-            plans.append(TtsCuePlan(index=item["cue"].index, segment_id=item["segment_id"], text=item["cue"].text, start_seconds=item["start"], end_seconds=item["end"], slot_duration=item["slot"], generated_duration=item["generated_duration"], applied_speed=speed, final_duration=final_duration, status="warning" if warning else "ok", warning=warning))
-            fitted_paths.append((fitted_path, item["start"]))
+                warning = f"TTS_OVERFLOW: cue {item['cue'].index} natural={item['natural_duration']:.2f}s slot={slot:.2f}s final={final_duration:.2f}s speed={speed:.3f}. Video will be extended by SegmentPlanner."
+            plans.append(TtsCuePlan(index=item["cue"].index, segment_id=item["segment_id"], text=item["cue"].text, start_seconds=item["start"], end_seconds=srt_timestamp_to_seconds(item["cue"].end), slot_duration=slot, generated_duration=item["natural_duration"], applied_speed=speed, final_duration=final_duration, status="warning" if warning else "ok", warning=warning))
+            fitted_paths.append((final_path, item["start"]))
         voiceover_path = output_dir / "voiceover.wav"
         self._build_voiceover_track(fitted_paths, voiceover_path, video_duration)
         plan_path = output_dir / "tts_plan.json"
-        warnings = [plan.warning for plan in plans if plan.warning]
+        warnings_list = [plan.warning for plan in plans if plan.warning]
         plan_payload = {
             "engine": options.tts_engine,
             "language": options.tts_language,
             "persona": options.tts_persona,
             "voice_mode": options.tts_voice_mode,
-            "clone_voice": clone_meta,
-            "voice": {key: value for key, value in voice_data.items() if key != "vieneu_id"},
-            "selected_vieneu_voice": voice_data.get("vieneu_id"),
+            "clone_voice": None,
+            "voice": {},
+            "selected_vieneu_voice": "",
             "requested_gender": options.tts_voice_gender,
             "emotion": options.tts_emotion,
             "fit_policy": options.tts_fit_policy,
@@ -358,12 +384,12 @@ class TtsVoiceoverService:
             "max_chars": options.tts_max_chars,
             "apply_watermark": options.tts_apply_watermark,
             "segment_speeds": {str(key): value for key, value in segment_speeds.items()},
-            "warnings": warnings,
+            "warnings": warnings_list,
             "cues": [plan.__dict__ for plan in plans],
             "voiceover_path": str(voiceover_path),
         }
         plan_path.write_text(json.dumps(plan_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        return {"voiceover_path": str(voiceover_path), "tts_plan_path": str(plan_path), "tts_warning_count": str(len(warnings))}
+        return {"voiceover_path": str(voiceover_path), "tts_plan_path": str(plan_path), "tts_warning_count": str(len(warnings_list))}
 
     def mix_voiceover(self, video_path: Path, voiceover_path: Path, output_path: Path, options: RenderOptions) -> Path:
         output_path.parent.mkdir(parents=True, exist_ok=True)

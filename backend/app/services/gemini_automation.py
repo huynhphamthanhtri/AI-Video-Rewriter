@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.core.config import settings
+from app.schemas.render import RenderOptions
 from app.services.fingerprint import build_init_script, generate_fingerprint
 from app.services.json_validator import JsonValidator
 
@@ -289,14 +290,35 @@ class GeminiAutomationService:
     def get_session_status(self) -> dict:
         session_path = Path(settings.gemini_session_path)
         if not session_path.exists():
-            return {"exists": False, "path": str(session_path)}
+            return {
+                "exists": False,
+                "session_file_exists": False,
+                "has_auth_cookies": False,
+                "live_checked": False,
+                "path": str(session_path),
+                "message": "No saved Gemini session file.",
+            }
         try:
             data = json.loads(session_path.read_text(encoding="utf-8"))
             cookies = data.get("cookies", [])
             has_auth = any(c["name"] in {"SAPISID", "__Secure-3PSAPISID", "OSID"} for c in cookies)
-            return {"exists": has_auth, "path": str(session_path)}
+            return {
+                "exists": has_auth,
+                "session_file_exists": True,
+                "has_auth_cookies": has_auth,
+                "live_checked": False,
+                "path": str(session_path),
+                "message": "Session file exists but live Gemini login is verified during auto pipeline.",
+            }
         except Exception:
-            return {"exists": False, "path": str(session_path)}
+            return {
+                "exists": False,
+                "session_file_exists": True,
+                "has_auth_cookies": False,
+                "live_checked": False,
+                "path": str(session_path),
+                "message": "Saved Gemini session file exists but could not be read.",
+            }
 
     async def open_standalone_browser(self, user_data_dir: str | None = None) -> str:
         browser_id = str(uuid.uuid4())
@@ -342,11 +364,24 @@ class GeminiAutomationService:
 
                 await page.wait_for_load_state("networkidle")
 
+                login_state = await self._detect_gemini_login_state(page, context)
+                if login_state["logged_in"]:
+                    try:
+                        await context.storage_state(path=str(session_path))
+                    except Exception:
+                        pass
+
                 async def _save_loop():
+                    saved_logged_in = login_state["logged_in"]
                     while True:
-                        await asyncio.sleep(10)
+                        await asyncio.sleep(2)
                         try:
-                            await context.storage_state(path=str(session_path))
+                            state = await self._detect_gemini_login_state(page, context)
+                            if state["logged_in"] and not saved_logged_in:
+                                await context.storage_state(path=str(session_path))
+                                saved_logged_in = True
+                            elif saved_logged_in:
+                                await context.storage_state(path=str(session_path))
                         except Exception:
                             return
 
@@ -498,6 +533,51 @@ class GeminiAutomationService:
         cookies = await context.cookies()
         return any(c["name"] in {"SAPISID", "__Secure-3PSAPISID", "OSID"} for c in cookies)
 
+    async def _detect_gemini_login_state(self, page: Any, context: Any) -> dict:
+        cookie_ok = await self._check_cookies_logged_in(context)
+
+        chat_area_ok = False
+        for sel in GEMINI_SELECTORS["chat_area"]:
+            if await page.locator(sel).count() > 0:
+                chat_area_ok = True
+                break
+
+        avatar_ok = False
+        for sel in GEMINI_SELECTORS["user_avatar"]:
+            if await page.locator(sel).count() > 0:
+                avatar_ok = True
+                break
+
+        signin_indicator = False
+        for sel in GEMINI_SELECTORS["sign_in_indicators"]:
+            if await page.locator(sel).count() > 0:
+                signin_indicator = True
+                break
+
+        logged_in = False
+        method = "unknown"
+        if cookie_ok:
+            logged_in = True
+            method = "cookies"
+        elif chat_area_ok and not signin_indicator:
+            logged_in = True
+            method = "chat_area"
+        elif avatar_ok:
+            logged_in = True
+            method = "avatar"
+        elif signin_indicator:
+            method = "signin"
+
+        return {
+            "logged_in": logged_in,
+            "method": method,
+            "needs_login": not logged_in,
+            "cookie_ok": cookie_ok,
+            "chat_area_ok": chat_area_ok,
+            "avatar_ok": avatar_ok,
+            "signin_indicator": signin_indicator,
+        }
+
     async def _handle_login_if_needed(
         self,
         task: GeminiAutomationTask,
@@ -507,48 +587,30 @@ class GeminiAutomationService:
     ) -> None:
         await page.wait_for_load_state("networkidle")
 
-        is_logged_in = await self._check_cookies_logged_in(context)
+        login_state = await self._detect_gemini_login_state(page, context)
+        is_logged_in = login_state["logged_in"]
 
         if not is_logged_in:
-            chat_count = 0
-            for sel in GEMINI_SELECTORS["chat_area"]:
-                chat_count = await page.locator(sel).count()
-                if chat_count > 0:
-                    break
-
-            sign_in_count = 0
-            for sel in GEMINI_SELECTORS["sign_in_indicators"]:
-                sign_in_count = await page.locator(sel).count()
-                if sign_in_count > 0:
-                    break
-
-            avatar_count = 0
-            for sel in GEMINI_SELECTORS["user_avatar"]:
-                avatar_count = await page.locator(sel).count()
-                if avatar_count > 0:
-                    break
-
-            if chat_count > 0 and sign_in_count == 0:
-                is_logged_in = True
-            elif avatar_count > 0:
-                is_logged_in = True
-
-        if not is_logged_in:
-            task.update("wait_login", "Vui lòng đăng nhập Gemini trên trình duyệt vừa mở. Bạn có 5 phút.", detail={"login_required": True})
+            task.update("wait_login", "Vui lòng đăng nhập Gemini trên trình duyệt vừa mở. Bạn có 5 phút.", detail={"login_required": True, "login_state": login_state})
             try:
-                await page.wait_for_url("**/app", timeout=300000)
-                await asyncio.sleep(3)
+                deadline = time.time() + 300
+                while time.time() < deadline:
+                    await asyncio.sleep(2)
+                    login_state = await self._detect_gemini_login_state(page, context)
+                    if login_state["logged_in"]:
+                        break
+                else:
+                    raise TimeoutError("Login timeout")
                 task.update("wait_login", "Đã phát hiện đăng nhập thành công. Đang lưu phiên làm việc...")
                 await context.storage_state(path=str(session_path))
                 task.update("wait_login", "Phiên làm việc đã được lưu.")
             except Exception:
                 task.mark_error("Quá thời gian chờ đăng nhập Gemini. Vui lòng thử lại.")
         else:
-            if not session_path.exists():
-                try:
-                    await context.storage_state(path=str(session_path))
-                except Exception:
-                    pass
+            try:
+                await context.storage_state(path=str(session_path))
+            except Exception:
+                pass
 
     async def _submit_prompt(self, task: GeminiAutomationTask, page: Any, prompt_text: str) -> None:
         task.update("submitting_prompt", "Đang tìm ô nhập prompt...")
@@ -698,7 +760,8 @@ class GeminiAutomationService:
             await asyncio.sleep(0)
 
             validator = JsonValidator()
-            valid, errors, parsed_model, fixed = validator.validate_with_auto_fix(json.loads(json_str))
+            render_options = RenderOptions.model_validate(render_payload.get("render_options") or {}) if render_payload.get("render_options") else None
+            valid, errors, parsed_model, fixed = validator.validate_with_auto_fix(json.loads(json_str), render_options=render_options)
             parsed = fixed or parsed_model
 
             if valid:

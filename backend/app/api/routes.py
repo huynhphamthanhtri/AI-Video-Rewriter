@@ -377,7 +377,7 @@ def _run_render_job(job_id: str, payload: RenderRequest):
 
         _raise_if_cancelled(job_id)
         _update_render_job(job_id, status="running", step="Validate EDL", message="Đang validate JSON EDL...", progress=5, completed_segments=0, total_segments=None)
-        valid, errors, parsed, _ = JsonValidator().validate_with_auto_fix(payload.gemini_json)
+        valid, errors, parsed, _ = JsonValidator().validate_with_auto_fix(payload.gemini_json, render_options=payload.render_options)
         if not valid or parsed is None:
             _update_render_job(job_id, status="error", step="Validate EDL", message="Validation Error", progress=100, errors=errors)
             return
@@ -907,7 +907,7 @@ def render_blur_video(payload: BlurRenderRequest):
 @router.post("/render", response_model=RenderResponse)
 def render_video(payload: RenderRequest, db=Depends(get_db)):
     _require_license("render")
-    valid, errors, parsed, _ = JsonValidator().validate_with_auto_fix(payload.gemini_json)
+    valid, errors, parsed, _ = JsonValidator().validate_with_auto_fix(payload.gemini_json, render_options=payload.render_options)
     if not valid or parsed is None:
         raise HTTPException(status_code=400, detail=errors)
     if payload.render_options.tts_mode == "voiceover":
