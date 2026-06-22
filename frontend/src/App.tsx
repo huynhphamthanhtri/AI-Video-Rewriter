@@ -292,6 +292,7 @@ export function App() {
   const [autoRenderStatus, setAutoRenderStatus] = useState<RenderJobStatus | null>(null);
   const autoRenderJobIdRef = useRef<string | null>(null);
   const autoRenderPollCancelledRef = useRef(false);
+  const autoRenderPollStartedRef = useRef(false);
 
   useEffect(() => { void loadPresets(); void loadRenderHistory(); void loadSavedCookies(); void loadRenderPreferences(); void loadLicenseStatus(); void loadGeminiSessionStatus(); }, []);
 
@@ -588,13 +589,20 @@ export function App() {
       setAutoPipelineProgress((prev: AutoPipelineProgressData | null) => prev ? { ...prev, task_id: res.task_id } : null);
       setPrompt(res.prompt_text);
 
+      autoRenderPollStartedRef.current = false;
       disconnectAutoPipelineWS.current = connectAutoPipelineWS(
         res.task_id,
         (data: AutoPipelineProgressData) => {
           setAutoPipelineProgress(data);
           if (data.result?.job_id) {
-            autoRenderJobIdRef.current = String(data.result.job_id);
-            toast.success(`Render job đã được tạo: ${data.result.job_id}`);
+            const jobId = String(data.result.job_id);
+            const isNew = autoRenderJobIdRef.current !== jobId;
+            autoRenderJobIdRef.current = jobId;
+            if (isNew) toast.success(`Render job đã được tạo: ${jobId}`);
+            if (!autoRenderPollStartedRef.current) {
+              autoRenderPollStartedRef.current = true;
+              void pollAutoRenderJob(jobId);
+            }
           }
         },
         () => {
@@ -603,8 +611,11 @@ export function App() {
           void loadRenderHistory();
           const jobId = autoRenderJobIdRef.current;
           if (jobId) {
+            if (!autoRenderPollStartedRef.current) {
+              autoRenderPollStartedRef.current = true;
+              void pollAutoRenderJob(jobId);
+            }
             toast.success('Auto pipeline hoàn tất! Đang chờ render...');
-            void pollAutoRenderJob(jobId);
           } else {
             toast.success('Auto pipeline hoàn tất!');
           }
@@ -626,6 +637,7 @@ export function App() {
     const taskId = autoPipelineProgress?.task_id;
     if (!taskId) return;
     autoRenderPollCancelledRef.current = true;
+    autoRenderPollStartedRef.current = false;
     autoRenderJobIdRef.current = null;
     disconnectAutoPipelineWS.current?.();
     setAutoPipelineProgress(null);
