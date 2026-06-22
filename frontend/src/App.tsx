@@ -897,7 +897,14 @@ export function App() {
             )}
             {autoRenderStatus && (
               ['queued', 'running', 'error', 'cancelled'].includes(autoRenderStatus.status)
-                ? <ProgressBar status={autoRenderStatus} />
+                ? <div className="space-y-2">
+                    <ProgressBar status={autoRenderStatus} />
+                    {autoPipelineProgress && (
+                      <button className="btn-mini danger w-full" onClick={handleCancelAutoPipeline}>
+                        Hủy Auto Pipeline
+                      </button>
+                    )}
+                  </div>
                 : autoRenderStatus.status === 'done'
                 ? <RenderResultPanel result={autoRenderStatus.result!} />
                 : null
