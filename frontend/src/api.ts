@@ -1,4 +1,4 @@
-import type { AutoPipelineProgress, BlurRegion, BlurRenderResponse, BlurUploadResponse, GeminiAutoSubmitResponse, GeminiOpenBrowserResponse, GeminiSessionStatus, LicenseStatus, Preset, PresetCompareResponse, PresetRecommendResponse, PresetSyncStatus, PromptHealthResponse, PromptPreviewResponse, PromptRunStats, RenderJobStatus, RenderOptions, RuntimeHealth, StorageCleanupResponse, StorageStats, SubtitlePreviewStyleResponse, TitleLayoutPreviewResponse, TtsCloneVoice, TtsVoice, UpdateCheckResponse, UpdateLaunchResponse, ValidateJsonResponse } from './types';
+import type { AutoPipelineProgress, BatchProgress, BlurRegion, BlurRenderResponse, BlurUploadResponse, GeminiAutoSubmitResponse, GeminiOpenBrowserResponse, GeminiSessionStatus, LicenseStatus, Preset, PresetCompareResponse, PresetRecommendResponse, PresetSyncStatus, PromptHealthResponse, PromptPreviewResponse, PromptRunStats, RenderJobStatus, RenderOptions, RuntimeHealth, StorageCleanupResponse, StorageStats, SubtitlePreviewStyleResponse, TitleLayoutPreviewResponse, TtsCloneVoice, TtsVoice, UpdateCheckResponse, UpdateLaunchResponse, ValidateJsonResponse } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api';
 const USE_MOCK = import.meta.env.VITE_USE_MOCK_API === 'true';
@@ -419,6 +419,27 @@ export async function startAutoPipeline(payload: Record<string, unknown>): Promi
   });
   if (!res.ok) throw new Error(await parseError(res, 'Không thể khởi động auto pipeline.'));
   return res.json();
+}
+
+export async function startBatchAutoPipeline(payload: Record<string, unknown>): Promise<BatchProgress> {
+  const res = await fetch(`${API_BASE}/gemini/batch-auto-submit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await parseError(res, 'Không thể khởi động batch auto pipeline.'));
+  return res.json();
+}
+
+export async function fetchBatchProgress(batchId: string): Promise<BatchProgress> {
+  const res = await fetch(`${API_BASE}/gemini/batch/${batchId}`);
+  if (!res.ok) throw new Error(await parseError(res, 'Không thể lấy trạng thái batch.'));
+  return res.json();
+}
+
+export async function cancelBatch(batchId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/gemini/batch/${batchId}/cancel`, { method: 'POST' });
+  if (!res.ok) throw new Error(await parseError(res, 'Không thể hủy batch.'));
 }
 
 export async function cancelAutoPipeline(taskId: string): Promise<void> {

@@ -397,3 +397,27 @@ export type GeminiOpenBrowserResponse = {
   user_data_dir?: string | null;
 };
 
+export type BatchItemProgress = {
+  index: number;
+  source_url: string;
+  status: 'pending' | 'running' | 'done' | 'error' | 'cancelled';
+  task_id?: string | null;
+  job_id?: string | null;
+  states: AutoPipelineStateEntry[];
+  result?: Record<string, unknown> | null;
+  error?: string | null;
+  started_at?: number | null;
+  ended_at?: number | null;
+};
+
+export type BatchProgress = {
+  batch_id: string;
+  status: 'pending' | 'running' | 'done' | 'error' | 'cancelled';
+  total_items: number;
+  current_index: number;
+  items: BatchItemProgress[];
+  started_at?: number | null;
+  ended_at?: number | null;
+  error?: string | null;
+};
+

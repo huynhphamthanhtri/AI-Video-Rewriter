@@ -21,6 +21,7 @@ from app.api.deps import get_preset_service
 from app.core.config import settings
 from app.core.database import get_db
 from app.schemas.common import MessageResponse, UploadCookiesResponse
+from app.schemas.batch import BatchAutoSubmitResponse, BatchProgress
 from app.schemas.preset import PresetCompareRequest, PresetCompareResponse, PresetCreate, PresetRead, PresetUpdate
 from app.services.preset_service import validate_preset_conflicts
 from app.schemas.prompt import PromptGenerateRequest, PromptGenerateResponse, PromptHealthResponse, PromptPreviewRequest, PromptPreviewResponse, PresetRecommendRequest, PresetRecommendResponse, PromptRunCreate, PromptRunRead, PromptRunStats
@@ -43,6 +44,7 @@ from app.services.tts_tools import TtsVoiceoverService, create_clone_voice, list
 from app.services.license_service import LicenseError, LicenseService
 from app.services.updater_service import UpdaterError, compare_versions, get_local_version, get_remote_manifest, launch_updater
 from app.services.gemini_automation import gemini_service, GeminiAutomationService
+from app.services.batch_pipeline import batch_service
 from app.schemas.prompt import GeminiAutoSubmitRequest, GeminiAutoSubmitResponse, GeminiAutoSubmitStatusResponse
 from app.services.prompt_generator import PromptGenerator
 
@@ -1233,6 +1235,15 @@ def _submit_render_from_automation(render_payload: dict) -> str:
 gemini_service.set_submit_render_fn(_submit_render_from_automation)
 
 
+def _get_render_status_for_batch(job_id: str) -> dict | None:
+    with render_jobs_lock:
+        job = render_jobs.get(job_id)
+        return dict(job) if job else None
+
+
+batch_service.set_render_status_getter(_get_render_status_for_batch)
+
+
 @router.post("/gemini/auto-submit", response_model=GeminiAutoSubmitResponse)
 async def gemini_auto_submit(payload: GeminiAutoSubmitRequest):
     form_data = payload.form_data
@@ -1257,6 +1268,38 @@ async def gemini_auto_submit(payload: GeminiAutoSubmitRequest):
 
     gemini_service.start(task_id, prompt, render_payload, payload.user_data_dir)
     return GeminiAutoSubmitResponse(task_id=task_id, prompt_text=prompt)
+
+
+@router.post("/gemini/batch-auto-submit", response_model=BatchAutoSubmitResponse)
+async def gemini_batch_auto_submit(payload: GeminiAutoSubmitRequest):
+    try:
+        batch = batch_service.start(
+            form_data=payload.form_data,
+            render_options=payload.render_options,
+            subtitle_mode=payload.subtitle_mode,
+            ytdlp_cookies_file=payload.ytdlp_cookies_file,
+            local_video_path=payload.local_video_path,
+            user_data_dir=payload.user_data_dir,
+        )
+        return BatchAutoSubmitResponse(**batch.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/gemini/batch/{batch_id}", response_model=BatchProgress)
+def gemini_batch_progress(batch_id: str):
+    batch = batch_service.get(batch_id)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch không tồn tại.")
+    return batch
+
+
+@router.post("/gemini/batch/{batch_id}/cancel", response_model=MessageResponse)
+def gemini_batch_cancel(batch_id: str):
+    ok = batch_service.cancel(batch_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Batch không tồn tại hoặc đã kết thúc.")
+    return MessageResponse(message="Đã gửi yêu cầu hủy batch.")
 
 
 @router.post("/gemini/auto-submit/cancel/{task_id}")

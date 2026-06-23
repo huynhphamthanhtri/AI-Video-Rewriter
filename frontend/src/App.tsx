@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Toaster, toast } from 'sonner';
 import { Activity, Bell, CheckCircle2, Copy, Download, ExternalLink, FileJson, Film, FolderCog, KeyRound, Loader2, Play, Plus, Sparkles, Trash2, Upload, Wand2, XCircle } from 'lucide-react';
-import { activateLicense, applyRenderJobBlur, blurPreviewUrl, cancelAutoPipeline, cancelRenderJob, checkForUpdates, cleanupStorage, clearLicense, connectAutoPipelineWS, createPreset, deletePreset, deleteSavedCookies, deleteTtsClone, fetchGeminiSessionStatus, fetchLicenseStatus, fetchPresets, fetchPromptHealthScore, fetchRenderJob, fetchRenderJobs, fetchRenderPreferences, fetchRuntimeHealth, fetchSavedCookies, fetchStorageStats, fetchTtsClones, fetchTtsStatus, fetchTtsVoicePreview, fetchTtsVoices, fileDownloadUrl, generatePrompt, launchUpdater, openGeminiBrowser, openOutputFolder, previewTtsClone, saveRenderPreferences, skipRenderJobBlur, startAutoPipeline, startRenderJob, syncBuiltInPresets, ttsAudioUrl, updatePreset, uploadCookies, uploadTtsClone, validateJson, validatePresetConflicts } from './api';
+import { activateLicense, applyRenderJobBlur, blurPreviewUrl, cancelAutoPipeline, cancelBatch, cancelRenderJob, checkForUpdates, cleanupStorage, clearLicense, connectAutoPipelineWS, createPreset, deletePreset, deleteSavedCookies, deleteTtsClone, fetchBatchProgress, fetchGeminiSessionStatus, fetchLicenseStatus, fetchPresets, fetchPromptHealthScore, fetchRenderJob, fetchRenderJobs, fetchRenderPreferences, fetchRuntimeHealth, fetchSavedCookies, fetchStorageStats, fetchTtsClones, fetchTtsStatus, fetchTtsVoicePreview, fetchTtsVoices, fileDownloadUrl, generatePrompt, launchUpdater, openGeminiBrowser, openOutputFolder, previewTtsClone, saveRenderPreferences, skipRenderJobBlur, startAutoPipeline, startBatchAutoPipeline, startRenderJob, syncBuiltInPresets, ttsAudioUrl, updatePreset, uploadCookies, uploadTtsClone, validateJson, validatePresetConflicts } from './api';
 import { BlurRegionEditor, BlurRegionSidebar, BlurTool } from './components/BlurTool';
 import { PresetCompareCard } from './components/PresetCompareCard';
 import { PresetRecommendationCard } from './components/PresetRecommendationCard';
 import { AutoPipelineProgress } from './components/AutoPipelineProgress';
+import { BatchPipelineProgress } from './components/BatchPipelineProgress';
 import { PromptPreviewCard } from './components/PromptPreviewCard';
 import { PromptTelemetryCard } from './components/PromptTelemetryCard';
 import { Card, Pill, SectionTitle, Stat } from './components/common';
@@ -16,7 +17,7 @@ import { SubtitleStyleSelector } from './components/SubtitleStyleSelector';
 import { TtsPanel } from './components/TtsPanel';
 import { localizationSelectGroups, localizationSwitches, optionGroups, presetNames } from './constants/options';
 import { geminiEdlSchema } from './schemas/geminiJson';
-import type { AutoPipelineProgress as AutoPipelineProgressData, BlurRegion, GeminiEdlPayload, GeminiSessionStatus, LicenseStatus, OutputResolution, Preset, PresetSyncStatus, PromptForm, PromptHealthResponse, RenderJobStatus, RenderOptions, RenderQuality, RuntimeHealth, StorageCleanupResponse, StorageStats, SubtitleMode, TtsCloneVoice, TtsVoice, UpdateCheckResponse, VideoSegment, VerticalMode } from './types';
+import type { AutoPipelineProgress as AutoPipelineProgressData, BatchProgress, BlurRegion, GeminiEdlPayload, GeminiSessionStatus, LicenseStatus, OutputResolution, Preset, PresetSyncStatus, PromptForm, PromptHealthResponse, RenderJobStatus, RenderOptions, RenderQuality, RuntimeHealth, StorageCleanupResponse, StorageStats, SubtitleMode, TtsCloneVoice, TtsVoice, UpdateCheckResponse, VideoSegment, VerticalMode } from './types';
 import type { BlurRegionLocal } from './components/BlurTool';
 import { presetConstraints, presetIntent, presetStrategy } from './types';
 import { downloadTextFile } from './utils/download';
@@ -281,6 +282,7 @@ export function App() {
   const [pendingPresetRenderOptions, setPendingPresetRenderOptions] = useState<PendingPresetRenderOptions | null>(null);
   const [promptHealth, setPromptHealth] = useState<PromptHealthResponse | null>(null);
   const [autoPipelineProgress, setAutoPipelineProgress] = useState<AutoPipelineProgressData | null>(null);
+  const [batchProgress, setBatchProgress] = useState<BatchProgress | null>(null);
   const [isAutoPipelineRunning, setIsAutoPipelineRunning] = useState(false);
   const [geminiSessionStatus, setGeminiSessionStatus] = useState<GeminiSessionStatus | null>(null);
   const [isOpeningBrowser, setIsOpeningBrowser] = useState(false);
@@ -293,6 +295,7 @@ export function App() {
   const autoRenderJobIdRef = useRef<string | null>(null);
   const autoRenderPollCancelledRef = useRef(false);
   const autoRenderPollStartedRef = useRef(false);
+  const batchPollCancelledRef = useRef(false);
 
   useEffect(() => { void loadPresets(); void loadRenderHistory(); void loadSavedCookies(); void loadRenderPreferences(); void loadLicenseStatus(); void loadGeminiSessionStatus(); }, []);
 
@@ -402,8 +405,42 @@ export function App() {
 
   useEffect(() => {
     const interval = setInterval(() => void loadGeminiSessionStatus(), 5000);
-    return () => { clearInterval(interval); autoRenderPollCancelledRef.current = true; };
+    return () => { clearInterval(interval); autoRenderPollCancelledRef.current = true; batchPollCancelledRef.current = true; };
   }, []);
+
+  async function pollBatchProgress(batchId: string) {
+    batchPollCancelledRef.current = false;
+    while (!batchPollCancelledRef.current) {
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      if (batchPollCancelledRef.current) break;
+      try {
+        const next = await fetchBatchProgress(batchId);
+        if (batchPollCancelledRef.current) break;
+        setBatchProgress(next);
+        if (next.status === 'done') {
+          setIsAutoPipelineRunning(false);
+          toast.success('Batch Auto Pipeline hoàn tất!');
+          if (renderDoneBell) playRenderDoneBell();
+          void loadRenderHistory();
+          break;
+        }
+        if (next.status === 'cancelled') {
+          setIsAutoPipelineRunning(false);
+          toast.warning('Batch đã bị hủy');
+          void loadRenderHistory();
+          break;
+        }
+        if (next.status === 'error') {
+          setIsAutoPipelineRunning(false);
+          toast.error(next.error || 'Batch thất bại');
+          void loadRenderHistory();
+          break;
+        }
+      } catch {
+        // Keep polling through transient network errors.
+      }
+    }
+  }
 
   async function pollAutoRenderJob(jobId: string) {
     autoRenderPollCancelledRef.current = false;
@@ -555,6 +592,8 @@ export function App() {
       autoRenderPollCancelledRef.current = true;
       autoRenderJobIdRef.current = null;
       setAutoRenderStatus(null);
+      setBatchProgress(null);
+      batchPollCancelledRef.current = true;
 
       const urls = form.source_mode === 'multi'
         ? parseYoutubeUrls(form.youtube_urls_text).map(u => u.startsWith('http') ? u : `https://${u}`)
@@ -564,6 +603,24 @@ export function App() {
       const conflictRes = await validatePresetConflicts(form as unknown as Record<string, unknown>);
       for (const w of conflictRes.warnings) {
         toast.warning(w.message);
+      }
+
+      if (urls.length > 1) {
+        setIsAutoPipelineRunning(true);
+        setAutoPipelineProgress(null);
+        const formPayload = { ...form, youtube_url: urls[0], youtube_urls: urls, source_mode: 'multi' };
+        const userDataDir = chromeProfilePath.trim() || undefined;
+        const batch = await startBatchAutoPipeline({
+          form_data: formPayload,
+          render_options: renderOptions,
+          subtitle_mode: subtitleMode,
+          ytdlp_cookies_file: form.ytdlp_cookies_file || undefined,
+          user_data_dir: userDataDir,
+        });
+        setBatchProgress(batch);
+        toast.success(`Đã bắt đầu batch ${batch.total_items} video`);
+        void pollBatchProgress(batch.batch_id);
+        return;
       }
 
       setIsAutoPipelineRunning(true);
@@ -646,6 +703,16 @@ export function App() {
     setIsRendering(false);
     cancelAutoPipeline(taskId).catch(() => {});
     toast.warning('Đã hủy auto pipeline');
+  }
+
+  function handleCancelBatchPipeline() {
+    const batchId = batchProgress?.batch_id;
+    if (!batchId) return;
+    batchPollCancelledRef.current = true;
+    cancelBatch(batchId).catch(() => {});
+    setBatchProgress(prev => prev ? { ...prev, status: 'cancelled', ended_at: Date.now() / 1000, items: prev.items.map(item => item.status === 'pending' || item.status === 'running' ? { ...item, status: 'cancelled', ended_at: Date.now() / 1000 } : item) } : null);
+    setIsAutoPipelineRunning(false);
+    toast.warning('Đã hủy batch auto pipeline');
   }
 
   function parseClientJson(text = jsonText) {
@@ -894,6 +961,9 @@ export function App() {
             </div>
             {autoPipelineProgress && !autoRenderStatus && (
               <AutoPipelineProgress progress={autoPipelineProgress} onCancel={handleCancelAutoPipeline} />
+            )}
+            {batchProgress && (
+              <BatchPipelineProgress progress={batchProgress} onCancel={handleCancelBatchPipeline} />
             )}
             {autoRenderStatus && ['queued', 'running'].includes(autoRenderStatus.status) && autoPipelineProgress && (
               <button className="btn-mini danger w-full" onClick={handleCancelAutoPipeline}>
