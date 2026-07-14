@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Download, FolderOpen, Loader2, Play, Volume2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { fetchTtsStatus, fetchTtsVoices, generateStandaloneTts, openOutputFolder, ttsAudioUrl } from '../api';
@@ -28,6 +28,8 @@ type TtsStudioSessionState = {
   downloadUrl: string | null;
   filename: string | null;
   outputDir: string | null;
+  generating: boolean;
+  lastError: string | null;
 };
 
 const ttsStudioSessionState: TtsStudioSessionState = {
@@ -39,7 +41,21 @@ const ttsStudioSessionState: TtsStudioSessionState = {
   downloadUrl: null,
   filename: null,
   outputDir: null,
+  generating: false,
+  lastError: null,
 };
+
+const emptyResultState = {
+  audioUrl: null,
+  downloadUrl: null,
+  filename: null,
+  outputDir: null,
+  generating: false,
+  lastError: null,
+} satisfies Pick<
+  TtsStudioSessionState,
+  'audioUrl' | 'downloadUrl' | 'filename' | 'outputDir' | 'generating' | 'lastError'
+>;
 
 export function TtsStudioPanel() {
   const [ttsStatus, setTtsStatus] = useState<{ status: string; message: string } | null>(null);
@@ -48,59 +64,58 @@ export function TtsStudioPanel() {
   const [selectedVoiceId, setSelectedVoiceIdState] = useState(ttsStudioSessionState.selectedVoiceId);
   const [text, setTextState] = useState(ttsStudioSessionState.text);
   const [format, setFormatState] = useState<'wav' | 'mp3'>(ttsStudioSessionState.format);
-  const [generating, setGenerating] = useState(false);
+  const [generating, setGeneratingState] = useState(ttsStudioSessionState.generating);
   const [audioUrl, setAudioUrlState] = useState<string | null>(ttsStudioSessionState.audioUrl);
   const [downloadUrl, setDownloadUrlState] = useState<string | null>(ttsStudioSessionState.downloadUrl);
   const [filename, setFilenameState] = useState<string | null>(ttsStudioSessionState.filename);
   const [outputDir, setOutputDirState] = useState<string | null>(ttsStudioSessionState.outputDir);
+  const [lastError, setLastErrorState] = useState<string | null>(ttsStudioSessionState.lastError);
   const [previewingVoiceId, setPreviewingVoiceId] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
 
-  function syncSession() {
-    Object.assign(ttsStudioSessionState, {
-      selectedLocale, selectedVoiceId, text, format, audioUrl, downloadUrl, filename, outputDir,
-    });
+  function setSession(partial: Partial<TtsStudioSessionState>) {
+    Object.assign(ttsStudioSessionState, partial);
+
+    if ('selectedLocale' in partial) setSelectedLocaleState(partial.selectedLocale ?? 'vi-VN');
+    if ('selectedVoiceId' in partial) setSelectedVoiceIdState(partial.selectedVoiceId ?? '');
+    if ('text' in partial) setTextState(partial.text ?? '');
+    if ('format' in partial) setFormatState(partial.format ?? 'wav');
+    if ('generating' in partial) setGeneratingState(Boolean(partial.generating));
+    if ('audioUrl' in partial) setAudioUrlState(partial.audioUrl ?? null);
+    if ('downloadUrl' in partial) setDownloadUrlState(partial.downloadUrl ?? null);
+    if ('filename' in partial) setFilenameState(partial.filename ?? null);
+    if ('outputDir' in partial) setOutputDirState(partial.outputDir ?? null);
+    if ('lastError' in partial) setLastErrorState(partial.lastError ?? null);
+  }
+
+  function clearResult() {
+    setSession(emptyResultState);
   }
 
   function setSelectedLocale(value: string) {
-    setSelectedLocaleState(value);
-    setAudioUrlState(null);
-    setDownloadUrlState(null);
-    setFilenameState(null);
-    setOutputDirState(null);
+    setSession({
+      selectedLocale: value,
+      ...emptyResultState,
+    });
   }
 
   function setSelectedVoiceId(value: string) {
-    setSelectedVoiceIdState(value);
-    setAudioUrlState(null);
-    setDownloadUrlState(null);
-    setFilenameState(null);
-    setOutputDirState(null);
+    setSession({ selectedVoiceId: value });
   }
 
   function setText(value: string) {
-    setTextState(value);
-    if (audioUrl) {
-      setAudioUrlState(null);
-      setDownloadUrlState(null);
-      setFilenameState(null);
-      setOutputDirState(null);
-    }
+    setSession({
+      text: value,
+      ...(audioUrl || lastError ? emptyResultState : {}),
+    });
   }
 
   function setFormat(value: 'wav' | 'mp3') {
-    setFormatState(value);
-    setAudioUrlState(null);
-    setDownloadUrlState(null);
-    setFilenameState(null);
-    setOutputDirState(null);
-  }
-
-  useEffect(() => {
-    Object.assign(ttsStudioSessionState, {
-      selectedLocale, selectedVoiceId, text, format, audioUrl, downloadUrl, filename, outputDir,
+    setSession({
+      format: value,
+      ...emptyResultState,
     });
-  }, [selectedLocale, selectedVoiceId, text, format, audioUrl, downloadUrl, filename, outputDir]);
+  }
 
   useEffect(() => {
     void fetchTtsStatus().then(setTtsStatus).catch(() => setTtsStatus({ status: 'error', message: 'Không kiểm tra được trạng thái TTS.' }));
@@ -109,11 +124,13 @@ export function TtsStudioPanel() {
       const sortedLocales = LOCALE_ORDER.filter(l => data.voices.some(v => v.locale === l));
       const firstLocale = sortedLocales[0] ?? data.voices[0]?.locale ?? 'vi-VN';
       if (!ttsStudioSessionState.selectedVoiceId) {
-        setSelectedLocale(firstLocale);
         const firstInLocale = data.voices
           .filter(v => v.locale === firstLocale)
           .sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99));
-        if (firstInLocale.length > 0) setSelectedVoiceId(firstInLocale[0].id);
+        setSession({
+          selectedLocale: firstLocale,
+          selectedVoiceId: firstInLocale[0]?.id ?? '',
+        });
       }
     }).catch(() => setVoices([]));
   }, []);
@@ -126,42 +143,67 @@ export function TtsStudioPanel() {
 
   const canGenerate = ttsStatus?.status === 'ready' && selectedVoiceId && text.trim().length > 0 && !generating;
 
-  const estimatedSeconds = Math.max(3, Math.ceil(text.trim().length / 120));
+  const estimateText = useMemo(() => {
+    const len = text.trim().length;
+    if (len <= 0) return '';
+    const seconds = Math.ceil(len / 60);
+    if (seconds < 5) return 'dưới 5 giây';
+    if (seconds < 60) return `khoảng ${seconds} giây`;
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    if (remainingSeconds === 0) return `khoảng ${minutes} phút`;
+    return `khoảng ${minutes} phút ${remainingSeconds} giây`;
+  }, [text]);
 
   async function handleGenerate() {
     if (!canGenerate) return;
-    setGenerating(true);
-    setAudioUrlState(null);
-    setDownloadUrlState(null);
-    setFilenameState(null);
-    setOutputDirState(null);
+    setSession({
+      generating: true,
+      lastError: null,
+      audioUrl: null,
+      downloadUrl: null,
+      filename: null,
+      outputDir: null,
+    });
     try {
       const res = await generateStandaloneTts({ voice_id: selectedVoiceId, text: text.trim(), format });
       const previewUrl = ttsAudioUrl(res.audio_path);
       const dlUrl = ttsAudioUrl(res.audio_path, true);
-      setAudioUrlState(previewUrl);
-      setDownloadUrlState(dlUrl);
-      setFilenameState(res.filename);
-      setOutputDirState(res.output_dir);
+      setSession({
+        generating: false,
+        lastError: null,
+        audioUrl: previewUrl,
+        downloadUrl: dlUrl,
+        filename: res.filename,
+        outputDir: res.output_dir,
+      });
       toast.success(res.message);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : 'Tạo TTS thất bại.');
-    } finally {
-      setGenerating(false);
+      const message = e instanceof Error ? e.message : 'Tạo TTS thất bại.';
+      setSession({
+        generating: false,
+        lastError: message,
+      });
+      toast.error(message);
     }
   }
 
   function handleSelectVoice(id: string) {
-    setSelectedVoiceId(id);
+    setSession({
+      selectedVoiceId: id,
+      ...emptyResultState,
+    });
   }
 
   function handleLocaleChange(locale: string) {
-    setSelectedLocale(locale);
-    setSelectedVoiceId('');
     const firstInLocale = voices
       .filter(v => v.locale === locale)
       .sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99));
-    if (firstInLocale.length > 0) setSelectedVoiceId(firstInLocale[0].id);
+    setSession({
+      selectedLocale: locale,
+      selectedVoiceId: firstInLocale[0]?.id ?? '',
+      ...emptyResultState,
+    });
   }
 
   return (
@@ -226,7 +268,7 @@ export function TtsStudioPanel() {
                     <button
                       className="btn-mini shrink-0"
                       disabled={previewingVoiceId === voice.id}
-                      onClick={e => { e.stopPropagation(); setPreviewingVoiceId(voice.id); setAudioUrlState(`/api/tts/prebuilt-preview/${voice.id}`); setDownloadUrlState(null); setFilenameState(null); setOutputDirState(null); setPreviewingVoiceId(null); }}
+                      onClick={e => { e.stopPropagation(); setPreviewingVoiceId(voice.id); setSession({ audioUrl: `/api/tts/prebuilt-preview/${voice.id}`, downloadUrl: null, filename: null, outputDir: null, generating: false, lastError: null }); setPreviewingVoiceId(null); }}
                     >
                       {previewingVoiceId === voice.id ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
                       {'Nghe thử'}
@@ -267,14 +309,23 @@ export function TtsStudioPanel() {
           {generating && (
             <div className="rounded-2xl border border-violet-500/20 bg-violet-500/10 p-4">
               <div className="h-2 overflow-hidden rounded-full bg-slate-800">
-                <div className="h-full w-1/3 animate-pulse rounded-full bg-violet-400" style={{ width: '40%' }} />
+                <div className="h-full w-2/5 animate-pulse rounded-full bg-violet-400" />
               </div>
               <p className="mt-2 text-sm text-slate-300">
-                Đang tạo audio... ước tính khoảng {estimatedSeconds} giây
+                Đang tạo audio{estimateText ? `... ước tính ${estimateText}` : '...'}
+              </p>
+              <p className="mt-1 text-xs text-slate-500">
+                Đây chỉ là ước tính theo độ dài text, tốc độ mạng thực tế có thể thay đổi.
               </p>
               {text.trim().length > WARN_CHARS && (
                 <p className="mt-1 text-xs text-amber-400">Text dài, có thể mất 1-2 phút tùy mạng.</p>
               )}
+            </div>
+          )}
+
+          {generating && !audioUrl && !lastError && (
+            <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-3 text-sm text-amber-300">
+              TTS đang xử lý ngầm. Nếu chuyển tab, kết quả sẽ hiện lại khi bạn quay lại.
             </div>
           )}
 
@@ -286,7 +337,17 @@ export function TtsStudioPanel() {
             {generating ? <><Loader2 size={18} className="animate-spin" /> Đang tạo...</> : <>Tạo file TTS</>}
           </button>
 
-          {audioUrl && (
+          {lastError && !generating && (
+            <div className="rounded-2xl border border-red-500/20 bg-red-500/10 p-4">
+              <h4 className="mb-2 font-bold text-red-300">Tạo TTS thất bại</h4>
+              <p className="text-sm text-red-200">{lastError}</p>
+              <button className="btn-secondary mt-3 inline-flex items-center gap-2" onClick={clearResult}>
+                Thử lại
+              </button>
+            </div>
+          )}
+
+          {audioUrl && !generating && (
             <div className="rounded-2xl border border-green-500/20 bg-green-500/10 p-4">
               <h4 className="mb-3 font-bold text-green-300">Tạo thành công</h4>
               <audio ref={audioRef} controls src={audioUrl} className="w-full" />

@@ -9,8 +9,10 @@ import shutil
 import subprocess
 import threading
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Coroutine
 
@@ -54,6 +56,19 @@ def tts_studio_outputs_dir() -> Path:
     return TTS_STUDIO_OUTPUTS_DIR
 
 
+def _filename_slug(voice_label: str, text: str) -> str:
+    def slugify(s: str) -> str:
+        s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+        s = re.sub(r"[^a-zA-Z0-9]+", "_", s).strip("_").lower()
+        return s[:40]
+
+    voice_slug = slugify(voice_label) or "voice"
+    text_slug = slugify(text[:60]) or "text"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    short_id = uuid.uuid4().hex[:8]
+    return f"tts_{voice_slug}_{text_slug}_{timestamp}_{short_id}"
+
+
 def generate_standalone_tts(
     voice_id: str,
     text: str,
@@ -75,7 +90,7 @@ def generate_standalone_tts(
         raise ValueError(f"Text quá dài ({len(cleaned)} ký tự). Tối đa {TTS_STUDIO_MAX_CHARS} ký tự.")
 
     output_dir = tts_studio_outputs_dir()
-    stem = f"tts_studio_{uuid.uuid4().hex}"
+    stem = _filename_slug(voice_data.get("label", voice_id), cleaned)
     wav_path = output_dir / f"{stem}.wav"
 
     EdgeTtsSynthesizer().synthesize_to_file(

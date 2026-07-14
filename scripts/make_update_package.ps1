@@ -238,12 +238,11 @@ $manifestContent = @{
     download_url          = "https://github.com/huynhphamthanhtri/MrTris_AUTO_RELEASES/releases/download/v$TargetVersion/$zipName"
     sha256                = $hash
     notes                 = @(
-        "v1.0.6 TTS Studio UX improvements",
-        "Fix: Download now forces Save As dialog via Content-Disposition attachment",
-        "Fix: TTS Studio state preserved when switching tabs away and back",
-        "New: Indeterminate progress bar with time estimate during generation",
-        "New: Mở thư mục tạm button to open temp folder with generated file",
-        "New: Show filename and temp folder path after successful generation"
+        "v1.0.7 TTS Studio hotfix",
+        "Fix: TTS Studio session state persists across tab switches",
+        "Fix: TTS Studio generated filenames are readable (tts_{voice}_{text}_{timestamp}_{id})",
+        "Fix: Preserve generating/result/error UI after returning to TTS tab",
+        "New: Clear stale result only when user changes text, voice, locale, or format"
     )
 }
 $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
