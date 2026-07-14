@@ -238,14 +238,14 @@ $manifestContent = @{
     download_url          = "https://github.com/huynhphamthanhtri/MrTris_AUTO_RELEASES/releases/download/v$TargetVersion/$zipName"
     sha256                = $hash
     notes                 = @(
-        "v1.0.4 One-Click Update from UI",
-        "New: -FromUI and -RestartAfterUpdate flags for updater",
-        "New: Path-based process detection via Win32_Process (ExecutablePath/CommandLine)",
-        "New: Graceful shutdown of MrTris_AUTO processes before update (5s delay)",
-        "New: Automatic app restart after update (packaged or dev launcher)",
-        "New: Confirmation dialog in UI before one-click update",
-        "Safety: Only ProjectRoot-related processes are detected and stopped",
-        "Safety: No broad Get-Process fallback if WMI is unavailable"
+        "v1.0.5 Full Update",
+        "New: Standalone Text to Speech (TTS Studio) tab - generate downloadable WAV/MP3",
+        "New: Support multiple languages and voices in TTS Studio",
+        "Fix: Reject overlapping SRT cues before voiceover rendering",
+        "Fix: Guarded tiny-overlap SRT auto-fix (<=0.5s, <=10%)",
+        "Safety: TTS voiceover overlap detection before audio mix",
+        "Improve: Gemini layered pipeline validation and prompt block architecture",
+        "Improve: Updated installer packaging and local update validation flow"
     )
 }
 $Utf8NoBom = New-Object System.Text.UTF8Encoding $false

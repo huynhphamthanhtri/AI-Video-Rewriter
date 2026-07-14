@@ -68,3 +68,22 @@ test_response.html
 test_result.txt
 test_screenshot.png
 test_multirun/
+
+# Local secrets
+service_account.json
+
+# Launcher logs
+launcher_*.txt
+launcher_dev_*.txt
+
+# Build artifacts
+MrTris_AUTO_source_light.zip
+
+# Local agent config
+opencode.json
+
+# Internal workspace
+plans/
+reviews/
+skills/
+ai/
