@@ -238,12 +238,10 @@ $manifestContent = @{
     download_url          = "https://github.com/huynhphamthanhtri/MrTris_AUTO_RELEASES/releases/download/v$TargetVersion/$zipName"
     sha256                = $hash
     notes                 = @(
-        "v1.0.8 TTS timeline reconciliation",
-        "Fix: Resolve TTS cue overlaps by shifting timeline before subtitle generation",
-        "Fix: Keep subtitle and voiceover timing synchronized after TTS duration fitting",
-        "Fix: Prevent voiceover track truncation when reconciled timeline exceeds video duration",
-        "New: Write tts_timeline_reconciliation.json diagnostics",
-        "Safety: Fail on unsafe per-cue or total timeline shifts"
+        "v1.0.9 Relaxed TTS reconciliation pair cap + failure diagnostics",
+        "Fix: Increase TTS_MAX_PAIR_AUTO_SHIFT_SECONDS from 0.75s to 2.0s",
+        "Fix: Write tts_timeline_reconciliation_failed.json before raising",
+        "New: Add tests for 1.346s shift, pair cap fail, and total cap fail"
     )
 }
 $Utf8NoBom = New-Object System.Text.UTF8Encoding $false

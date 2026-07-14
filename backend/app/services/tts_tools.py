@@ -31,7 +31,7 @@ TTS_STUDIO_MAX_CHARS = 10000
 ALLOWED_STUDIO_FORMATS = frozenset({"wav", "mp3"})
 TTS_OVERLAP_HARD_FAIL_SECONDS = 0.25
 TTS_MIN_CUE_GAP_SECONDS = 0.05
-TTS_MAX_PAIR_AUTO_SHIFT_SECONDS = 0.75
+TTS_MAX_PAIR_AUTO_SHIFT_SECONDS = 2.0
 TTS_MAX_TOTAL_AUTO_SHIFT_SECONDS = 5.0
 
 EDGE_TTS_VOICES = [
@@ -527,6 +527,13 @@ class TtsVoiceoverService:
         return plans, fitted_paths, segment_speeds
 
     @staticmethod
+    def _write_reconciliation_failure(output_dir: Path | None, report: dict) -> None:
+        if not output_dir:
+            return
+        report_path = output_dir / "tts_timeline_reconciliation_failed.json"
+        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    @staticmethod
     def reconcile_payload_tts_timeline(payload: GeminiPayloadSchema, plans: list[TtsCuePlan], output_dir: Path | None = None) -> dict:
         sorted_plans = sorted(plans, key=lambda p: p.start_seconds)
         srt_by_index = {item.index: item for item in payload.srt}
@@ -553,11 +560,44 @@ class TtsVoiceoverService:
             if new_start < previous_end + TTS_MIN_CUE_GAP_SECONDS:
                 needed_shift = (previous_end + TTS_MIN_CUE_GAP_SECONDS) - new_start
                 if needed_shift > TTS_MAX_PAIR_AUTO_SHIFT_SECONDS:
+                    fail_report = {
+                        "applied": False,
+                        "failed": True,
+                        "failure_code": "TTS_TIMING_RECONCILE_FAILED",
+                        "failed_cue_index": plan.index,
+                        "required_shift_seconds": round(needed_shift, 3),
+                        "max_pair_auto_shift_seconds": TTS_MAX_PAIR_AUTO_SHIFT_SECONDS,
+                        "max_total_auto_shift_seconds": TTS_MAX_TOTAL_AUTO_SHIFT_SECONDS,
+                        "total_shift_before_failure_seconds": round(total_shift, 3),
+                        "previous_end_seconds": round(previous_end, 3),
+                        "original_start_seconds": round(orig_start, 3),
+                        "original_end_seconds": round(orig_end, 3),
+                        "final_duration_seconds": round(plan.final_duration, 3),
+                        "adjustments": adjustments,
+                    }
+                    TtsVoiceoverService._write_reconciliation_failure(output_dir, fail_report)
                     raise RuntimeError(
                         f"TTS_TIMING_RECONCILE_FAILED: cue {plan.index} requires "
                         f"{needed_shift:.3f}s shift but max pair is {TTS_MAX_PAIR_AUTO_SHIFT_SECONDS}s."
                     )
                 if total_shift + needed_shift > TTS_MAX_TOTAL_AUTO_SHIFT_SECONDS:
+                    fail_report = {
+                        "applied": False,
+                        "failed": True,
+                        "failure_code": "TTS_TIMING_RECONCILE_TOTAL_TOO_LARGE",
+                        "failed_cue_index": plan.index,
+                        "required_shift_seconds": round(needed_shift, 3),
+                        "candidate_total_shift_seconds": round(total_shift + needed_shift, 3),
+                        "max_pair_auto_shift_seconds": TTS_MAX_PAIR_AUTO_SHIFT_SECONDS,
+                        "max_total_auto_shift_seconds": TTS_MAX_TOTAL_AUTO_SHIFT_SECONDS,
+                        "total_shift_before_failure_seconds": round(total_shift, 3),
+                        "previous_end_seconds": round(previous_end, 3),
+                        "original_start_seconds": round(orig_start, 3),
+                        "original_end_seconds": round(orig_end, 3),
+                        "final_duration_seconds": round(plan.final_duration, 3),
+                        "adjustments": adjustments,
+                    }
+                    TtsVoiceoverService._write_reconciliation_failure(output_dir, fail_report)
                     raise RuntimeError(
                         f"TTS_TIMING_RECONCILE_TOTAL_TOO_LARGE: total shift "
                         f"{total_shift + needed_shift:.3f}s exceeds {TTS_MAX_TOTAL_AUTO_SHIFT_SECONDS}s."
@@ -579,6 +619,7 @@ class TtsVoiceoverService:
 
         report = {
             "applied": len(adjustments) > 0,
+            "failed": False,
             "min_gap_seconds": TTS_MIN_CUE_GAP_SECONDS,
             "max_pair_auto_shift_seconds": TTS_MAX_PAIR_AUTO_SHIFT_SECONDS,
             "max_total_auto_shift_seconds": TTS_MAX_TOTAL_AUTO_SHIFT_SECONDS,
