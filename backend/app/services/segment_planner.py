@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 
 from app.schemas.render import (
@@ -13,6 +14,20 @@ from app.schemas.render import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Safe speed limits for bidirectional sync optimizer (hardcoded, not configurable)
+# Video slowdown helps give voice more room when voice > scene
+SAFE_VIDEO_MIN_SOFT = 0.92
+SAFE_VIDEO_MAX_SOFT = 1.15
+SAFE_VOICE_MAX_SOFT = 1.25
+SYNC_TOLERANCE_SECONDS = 0.25
+SYNC_TOLERANCE_RATIO = 0.05
+
+# Dead air hard trim: when residual even after capped speedup >= threshold,
+# force output duration to voice_duration + target_padding (server-side enforcement).
+# This bypasses Gemini non-compliance with scene length prompts.
+DEAD_AIR_HARD_TRIM_THRESHOLD = 1.5
+DEAD_AIR_TARGET_PADDING = 0.75
 
 
 class SegmentPlanner:
@@ -86,33 +101,147 @@ class SegmentPlanner:
             source_id=source_id,
             source_remaining_seconds=source_remaining,
             speed_factor=1.0,
+            video_speed_factor=1.0,
         )
 
         overflow = total_natural - scene_duration
-        if overflow <= 0:
+        tolerance = max(SYNC_TOLERANCE_SECONDS, scene_duration * SYNC_TOLERANCE_RATIO)
+
+        # Case A: within tolerance — no change
+        if abs(overflow) <= tolerance:
+            plan.duration_delta_seconds = 0.0
+            self._attach_timing_warning(plan)
             return plan
+
+        # ── Case B: voice longer than scene ──
+        if overflow > 0:
+            ratio = total_natural / scene_duration
+            # Balanced: slow down video (=> scene lasts longer) and speed up voice
+            #   voice / voice_speed <= scene / video_speed  (video_speed < 1.0)
+            #   => voice_speed >= ratio * video_speed
+            #   Equal perceptual load: video_speed = 1/sqrt(ratio), voice_speed = sqrt(ratio)
+            ideal_video = 1.0 / math.sqrt(ratio)
+            if ideal_video >= SAFE_VIDEO_MIN_SOFT:
+                # Neither cap hit — use exact balanced fit
+                video_speed = ideal_video
+                voice_speed = math.sqrt(ratio)
+            else:
+                # Video hits min cap — voice must compensate more
+                video_speed = SAFE_VIDEO_MIN_SOFT
+                voice_speed = ratio * video_speed
+
+            if voice_speed <= max_speed:
+                eff_scene = scene_duration / video_speed
+                plan.video_speed_factor = video_speed
+                plan.speed_factor = voice_speed
+                plan.decision = "sync_speed_balance"
+                plan.required_duration = eff_scene
+                plan.duration_delta_seconds = eff_scene - scene_duration
+                self._attach_timing_warning(plan)
+                return plan
+
+            # Even with max slowdown + max speedup it doesn't fully fit
+            # Fall back to existing logic (no video speed adjustment)
+            return self._fallback_overflow(plan, overflow, policy, max_speed)
+
+        # ── Case C: voice shorter than scene — conservative trim ──
+        underflow_ratio = scene_duration / total_natural  # e.g. 10/9.3 = 1.075
+        if underflow_ratio <= SAFE_VIDEO_MAX_SOFT:
+            video_speed = underflow_ratio
+            final_dur = scene_duration / video_speed
+            plan.video_speed_factor = video_speed
+            plan.speed_factor = 1.0
+            plan.decision = "sync_video_trim_speedup"
+            plan.required_duration = final_dur
+            plan.duration_delta_seconds = final_dur - scene_duration  # negative
+            self._attach_timing_warning(plan)
+            return plan
+
+        # Underflow too large — apply capped speedup first, then hard trim if needed
+        video_speed = SAFE_VIDEO_MAX_SOFT
+        speedup_duration = scene_duration / video_speed
+        residual = speedup_duration - total_natural
+
+        if residual >= DEAD_AIR_HARD_TRIM_THRESHOLD:
+            target_duration = total_natural + DEAD_AIR_TARGET_PADDING
+            trim_duration = max(total_natural, min(target_duration, speedup_duration))
+            plan.video_speed_factor = video_speed
+            plan.speed_factor = 1.0
+            plan.decision = "sync_video_hard_trim"
+            plan.required_duration = trim_duration
+            plan.duration_delta_seconds = trim_duration - scene_duration
+            plan.warning = (
+                f"Scene {segment_id}: hard trim to voice+{DEAD_AIR_TARGET_PADDING:.0f}s "
+                f"via video speed {video_speed:.2f}x. "
+                f"Scene {scene_duration:.1f}s vs voice {total_natural:.1f}s."
+            )
+            self._attach_timing_warning(plan)
+            return plan
+
+        final_dur = speedup_duration
+        plan.video_speed_factor = video_speed
+        plan.speed_factor = 1.0
+        plan.decision = "sync_video_trim_speedup_capped"
+        plan.required_duration = final_dur
+        plan.duration_delta_seconds = final_dur - scene_duration
+        plan.warning = (
+            f"Scene {segment_id}: dead air reduced via video speed {video_speed:.2f}x. "
+            f"Scene {scene_duration:.1f}s vs voice {total_natural:.1f}s."
+        )
+        self._attach_timing_warning(plan)
+        return plan
+
+    def _fallback_overflow(
+        self,
+        plan: SegmentPlanItem,
+        overflow: float,
+        policy: str,
+        max_speed: float,
+    ) -> SegmentPlanItem:
+        """Original overflow logic (unchanged). No video speed adjustment."""
+        scene_duration = plan.scene_duration
+        total_natural = plan.natural_voice_duration
+        source_id = plan.source_id
+        source_remaining = plan.source_remaining_seconds
 
         if policy == "extend_video":
             return self._to_extend(plan, overflow, 1.0)
 
         if policy in ("segment_uniform", "speed_up_voice"):
             speed_factor = min(max_speed, total_natural / scene_duration)
+            if speed_factor == max_speed:
+                capped_duration = total_natural / speed_factor
+                if capped_duration > scene_duration * 1.5:
+                    needed_extend = capped_duration - scene_duration
+                    capped_extend = min(needed_extend, scene_duration)
+                    plan = self._to_extend(plan, capped_extend, speed_factor)
+                    plan.overrun_seconds = max(0.0, needed_extend - capped_extend)
+                    if plan.decision == "freeze_frame":
+                        residual = capped_extend - plan.extend_seconds
+                        if residual > 0:
+                            plan.speed_factor = min(max_speed, total_natural / max(scene_duration + plan.extend_seconds, 0.1))
+                            plan.decision = "hybrid_extend_speedup"
+                    plan.duration_delta_seconds = plan.required_duration - scene_duration
+                    self._attach_timing_warning(plan)
+                    return plan
             plan.speed_factor = speed_factor
             plan.decision = "light_speedup"
             plan.required_duration = scene_duration
+            plan.duration_delta_seconds = 0.0
+            self._attach_timing_warning(plan)
             return plan
 
         # Hybrid (default)
-        overflow_pct = overflow / scene_duration if scene_duration > 0 else 0.0
-        if overflow_pct <= 0.10:
-            speed_factor = min(max_speed, total_natural / scene_duration)
-            plan.speed_factor = speed_factor
-            plan.decision = "light_speedup"
-            plan.required_duration = scene_duration
-            return plan
-
-        # Overflow > 10% — extend_video (no speed-up, full extension)
-        return self._to_extend(plan, overflow, 1.0)
+        plan = self._to_extend(plan, overflow, 1.0)
+        if plan.decision == "freeze_frame":
+            residual = overflow - plan.extend_seconds
+            if residual > 0:
+                speed_factor = min(max_speed, total_natural / max(scene_duration + plan.extend_seconds, 0.1))
+                plan.speed_factor = speed_factor
+                plan.decision = "hybrid_extend_speedup"
+        plan.duration_delta_seconds = plan.required_duration - scene_duration
+        self._attach_timing_warning(plan)
+        return plan
 
     def _to_extend(
         self,
@@ -123,6 +252,7 @@ class SegmentPlanner:
         plan.speed_factor = speed_factor
         plan.extend_seconds = extend_seconds
         plan.required_duration = plan.scene_duration + extend_seconds
+        plan.duration_delta_seconds = plan.required_duration - plan.scene_duration
 
         if plan.source_remaining_seconds >= extend_seconds:
             plan.decision = "footage_extend"
@@ -137,19 +267,41 @@ class SegmentPlanner:
                 )
                 plan.extend_seconds = capped
                 plan.required_duration = plan.scene_duration + capped
+                plan.duration_delta_seconds = plan.required_duration - plan.scene_duration
+        self._attach_timing_warning(plan)
         return plan
+
+    def _attach_timing_warning(self, plan: SegmentPlanItem) -> None:
+        voice_speed = plan.speed_factor or 1.0
+        post_voice = plan.natural_voice_duration / voice_speed
+        residual = plan.required_duration - post_voice
+        parts = []
+        if residual >= 2.0:
+            parts.append(f"SEVERE_DEAD_AIR: residual={residual:.1f}s after sync={plan.decision}")
+        elif residual >= 1.0:
+            parts.append(f"DEAD_AIR: residual={residual:.1f}s after sync={plan.decision}")
+        if residual <= -0.5:
+            parts.append(f"VOICE_OVERFLOW: voice overflows scene by {abs(residual):.1f}s")
+        if voice_speed >= 1.10:
+            parts.append(f"VOICE_SPEED_LIMIT: voice speed={voice_speed:.2f}x, no room for longer voice")
+        if plan.decision == "sync_video_trim_speedup_capped" and residual >= 0.5:
+            parts.append(f"CAP_REACHED_STILL_MISMATCH: capped at video_speed_max={SAFE_VIDEO_MAX_SOFT:.2f}x but residual={residual:.1f}s remains")
+        if plan.decision == "sync_video_hard_trim":
+            parts.append(f"HARD_TRIM_DEAD_AIR: trimmed output to voice+{DEAD_AIR_TARGET_PADDING:.0f}s after residual exceeded {DEAD_AIR_HARD_TRIM_THRESHOLD:.1f}s")
+        if parts:
+            suffix = " | ".join(parts)
+            plan.warning = (plan.warning + " | " + suffix) if plan.warning else suffix
 
     def compute_srt_shifts(
         self,
         plans: list[SegmentPlanItem],
         payload: GeminiPayloadSchema,
     ) -> dict[int, float]:
-        """Accumulate extend_seconds across ordered segments to compute per-cue SRT shifts.
+        """Accumulate duration_delta_seconds across ordered segments to compute per-cue SRT shifts.
 
-        Each segment's extension shifts all subsequent cues (including those
-        within the same segment after the overflow point) forward.
-        For simplicity, the entire segment's SRT range is shifted by the
-        accumulated extension from prior segments.
+        Each segment's duration delta (from extend, video_speed_factor, or both)
+        shifts all subsequent cues (including those within the same segment)
+        forward or backward.
 
         Returns: {cue_index: total_shift_seconds}
         """
@@ -159,8 +311,8 @@ class SegmentPlanner:
         accum = 0.0
         for seg in segments:
             p = plan_by_seg.get(seg.segment_id)
-            extend = p.extend_seconds if p else 0.0
+            delta = p.duration_delta_seconds if p else 0.0
             for idx in range(seg.subtitle_start, seg.subtitle_end + 1):
                 shifts[idx] = accum
-            accum += extend
+            accum += delta
         return shifts

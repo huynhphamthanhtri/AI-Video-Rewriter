@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import subprocess
 import sys
 import time
 import urllib.error
@@ -11,6 +12,16 @@ from pathlib import Path
 
 
 APP_NAME = "MrTris_AUTO"
+
+
+def app_root() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    script_dir = Path(__file__).resolve().parent
+    for candidate in [script_dir, *script_dir.parents]:
+        if (candidate / "backend").exists() and (candidate / "frontend").exists():
+            return candidate
+    return script_dir
 
 
 def appdata() -> Path:
@@ -89,15 +100,86 @@ def sync_presets() -> None:
     print(post(f"{backend}/api/presets/sync"))
 
 
+def repair_playwright_browsers(root: Path) -> None:
+    """Re-install Playwright chromium into the runtime's bundled Python."""
+    python_exe = root / "runtime" / "python" / "python.exe"
+    if not python_exe.exists():
+        print("Cannot repair Playwright: python.exe not found in runtime.")
+        return
+    print("Re-installing Playwright Chromium...")
+    result = subprocess.run(
+        [str(python_exe), "-m", "playwright", "install", "chromium"],
+        capture_output=True, text=True, timeout=300,
+    )
+    if result.returncode != 0:
+        print(f"FAILED to install Chromium:\n{result.stderr[:500]}")
+    else:
+        print("OK: Playwright Chromium installed.")
+
+    # Copy newly installed browsers into runtime/playwright-browsers
+    ms_playwright = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")) / "ms-playwright"
+    browsers_dst = root / "runtime" / "playwright-browsers"
+    browsers_dst.mkdir(parents=True, exist_ok=True)
+    if ms_playwright.exists():
+        for d in ms_playwright.iterdir():
+            if d.is_dir() and ("chromium" in d.name or "ffmpeg" in d.name or "winldd" in d.name):
+                dst = browsers_dst / d.name
+                if dst.exists():
+                    shutil.rmtree(dst)
+                shutil.copytree(d, dst)
+                print(f"  Copied {d.name}")
+    print("Playwright browsers repair complete.")
+
+
+def repair_tts(root: Path) -> None:
+    """Re-install Edge TTS dependencies."""
+    python_exe = root / "runtime" / "python" / "python.exe"
+    if not python_exe.exists():
+        print("Cannot repair TTS: python.exe not found in runtime.")
+        return
+    req_tts = root / "backend" / "requirements.txt"
+    print("Re-installing TTS dependencies...")
+    result = subprocess.run(
+        [str(python_exe), "-m", "pip", "install", "-r", str(req_tts)],
+        capture_output=True, text=True, timeout=600,
+    )
+    if result.returncode != 0:
+        print(f"FAILED to install TTS deps:\n{result.stderr[:500]}")
+    else:
+        print("OK: TTS dependencies installed.")
+    # Verify
+    verify = subprocess.run(
+        [str(python_exe), "-c", "import edge_tts; print('OK')"],
+        capture_output=True, text=True, timeout=120,
+    )
+    if verify.returncode != 0:
+        print(f"Edge TTS import failed: {verify.stderr[:300]}")
+    else:
+        print("OK: Edge TTS import successful.")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Repair MrTris_AUTO local data without deleting final outputs.")
-    parser.add_argument("--clear-temp", action="store_true")
-    parser.add_argument("--reset-settings", action="store_true")
-    parser.add_argument("--sync-presets", action="store_true")
-    parser.add_argument("--backup-db", action="store_true")
+    parser.add_argument("--clear-temp", action="store_true", help="Clear temp data")
+    parser.add_argument("--reset-settings", action="store_true", help="Reset settings to defaults")
+    parser.add_argument("--sync-presets", action="store_true", help="Sync built-in presets")
+    parser.add_argument("--backup-db", action="store_true", help="Backup database")
+    parser.add_argument("--repair-playwright", action="store_true", help="Re-install Playwright Chromium browser")
+    parser.add_argument("--repair-tts", action="store_true", help="Re-install Edge TTS dependencies")
+    parser.add_argument("--all", action="store_true", help="Run all repair actions")
     args = parser.parse_args()
 
+    root = app_root()
     recreate_folders()
+
+    if args.all:
+        args.backup_db = True
+        args.clear_temp = True
+        args.reset_settings = True
+        args.sync_presets = True
+        args.repair_playwright = True
+        args.repair_tts = True
+
     if args.backup_db:
         backup_database()
     if args.clear_temp:
@@ -106,7 +188,11 @@ def main() -> int:
         reset_settings()
     if args.sync_presets:
         sync_presets()
-    if not any([args.backup_db, args.clear_temp, args.reset_settings, args.sync_presets]):
+    if args.repair_playwright:
+        repair_playwright_browsers(root)
+    if args.repair_tts:
+        repair_tts(root)
+    if not any([args.backup_db, args.clear_temp, args.reset_settings, args.sync_presets, args.repair_playwright, args.repair_tts]):
         print("Basic repair completed. Use --help for optional repair actions.")
     return 0
 

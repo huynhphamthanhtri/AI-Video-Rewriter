@@ -17,15 +17,17 @@ VideoEncoderMode = Literal["auto", "cpu", "nvenc", "qsv", "amf"]
 SegmentFps = Literal["auto", "30", "60"]
 BlurMode = Literal["none", "review"]
 TtsMode = Literal["none", "voiceover"]
-TtsEngine = Literal["vieneu_turbo"]
+TtsEngine = Literal["edge_tts"]
 TtsEmotion = Literal["natural", "storytelling"]
 TtsFitPolicy = Literal["hybrid", "segment_uniform", "extend_video", "speed_up_voice"]
-TtsLanguage = Literal["auto", "vi", "en", "vi_en"]
+
 TtsPersona = Literal["neutral", "sports_commentator", "drama_storyteller", "news_anchor", "funny_reviewer", "podcast_host"]
 TtsVoiceRegion = Literal["auto", "vi_north", "vi_south"]
 TtsVoiceGender = Literal["auto", "female", "male"]
-TtsVoiceId = Literal["auto", "ly", "ngoc", "tuyen", "binh", "doan", "vinh"]
-TtsVoiceMode = Literal["preset", "clone"]
+TtsVoiceId = Literal["auto", "vi-VN-HoaiMyNeural", "vi-VN-NamMinhNeural", "en-US-JennyNeural", "en-US-GuyNeural",
+                      "de-DE-KatjaNeural", "de-DE-ConradNeural", "ja-JP-NanamiNeural", "ja-JP-KeitaNeural",
+                      "es-MX-DaliaNeural", "es-MX-JorgeNeural", "ko-KR-SunHiNeural", "ko-KR-InJoonNeural"]
+TtsVoiceMode = Literal["preset"]
 OriginalAudioMode = Literal["lower_fixed", "mute"]
 TitleMode = Literal["none", "auto", "custom"]
 TitleStyle = Literal["yellow_highlight", "dark_badge", "clean_white", "breaking_yellow"]
@@ -90,6 +92,7 @@ class MetadataSchema(BaseModel):
     localization_level: str = ""
     adaptation_mode: str = ""
     narrator_persona: str = ""
+    hashtags: list[str] = []
 
 
 class RewriteScriptSchema(BaseModel):
@@ -106,6 +109,7 @@ class SourceSchema(BaseModel):
 class SrtItemSchema(TimestampedSrtModel):
     index: int = Field(ge=1)
     text: str
+    tts_text: str | None = None
 
 
 MAX_FREEZE_FRAME_SECONDS = 3.0
@@ -146,8 +150,11 @@ class SegmentPlanItem(BaseModel):
     source_id: str
     source_remaining_seconds: float
     speed_factor: float = 1.0
+    video_speed_factor: float = 1.0
     freeze_duration: float | None = None
     warning: str = ""
+    overrun_seconds: float = 0.0
+    duration_delta_seconds: float = 0.0
 
 
 class GeminiPayloadSchema(BaseModel):
@@ -165,17 +172,24 @@ class GeminiPayloadSchema(BaseModel):
 
         for item in self.srt:
             lines = item.text.split("\n")
+            new_lines: list[str] = []
             for line in lines:
                 if len(line) > 80:
-                    raise ValueError(
-                        f"SRT #{item.index} có dòng dài {len(line)} ký tự (tối đa 80). "
-                        f"Nội dung: \"{line[:60]}...\""
-                    )
-            if len(lines) > 3:
+                    split_at = line.rfind(" ", 0, 80)
+                    if split_at > 0:
+                        new_lines.append(line[:split_at])
+                        new_lines.append(line[split_at + 1:])
+                    else:
+                        new_lines.append(line)
+                else:
+                    new_lines.append(line)
+            if len(new_lines) > 3:
                 raise ValueError(
-                    f"SRT #{item.index} có {len(lines)} dòng (tối đa 3). "
+                    f"SRT #{item.index} có {len(new_lines)} dòng (tối đa 3) sau khi tự động chia. "
                     f"Cần chia nhỏ thành nhiều SRT item."
                 )
+            if new_lines != lines:
+                item.text = "\n".join(new_lines)
 
         source_ids = [source.source_id for source in self.sources]
         if len(source_ids) != len(set(source_ids)):
@@ -236,8 +250,7 @@ class RenderOptions(BaseModel):
     segment_fps: SegmentFps = "60"
     blur_mode: BlurMode = "none"
     tts_mode: TtsMode = "none"
-    tts_engine: TtsEngine = "vieneu_turbo"
-    tts_language: TtsLanguage = "auto"
+    tts_engine: TtsEngine = "edge_tts"
     tts_persona: TtsPersona = "neutral"
     tts_voice_region: TtsVoiceRegion = "auto"
     tts_voice_gender: TtsVoiceGender = "female"
@@ -276,8 +289,29 @@ class RenderOptions(BaseModel):
     subtitle_outline: bool = True
     subtitle_shadow: bool = False
     subtitle_box: bool = True
+    domain: str = "general"
     artifact_retention: ArtifactRetention = "smart"
     video_speed: float = Field(default=1.0, ge=1.0, le=1.5)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_tts_options(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            data = dict(value)
+            if data.get("tts_engine") == "vieneu_turbo":
+                data["tts_engine"] = "edge_tts"
+            if data.get("tts_voice_mode") == "clone":
+                data["tts_voice_mode"] = "preset"
+                data["tts_clone_voice_id"] = ""
+            legacy_voice_ids = {
+                "ly", "ngoc", "tuyen", "binh", "doan", "vinh", "mai_anh_tai",
+                "co_gai_hoat_ngon", "thanh_nien_tu_tin", "duyen", "rachel", "jessica",
+                "matilda", "liam", "brian", "james", "jessie", "serena", "adam", "eddie",
+            }
+            if data.get("tts_voice_id") in legacy_voice_ids:
+                data["tts_voice_id"] = "auto"
+            return data
+        return value
 
 
 class BlurKeyframe(BaseModel):
@@ -330,7 +364,7 @@ class BlurDecisionRequest(BaseModel):
 
 class TtsVoicePreviewRequest(BaseModel):
     voice_id: str
-    text: str = "Xin chào, đây là giọng đọc thử từ VieNeu Turbo."
+    text: str = "Xin chào, đây là giọng đọc thử từ Edge TTS."
 
 
 class TtsVoicePreviewResponse(BaseModel):
@@ -338,8 +372,21 @@ class TtsVoicePreviewResponse(BaseModel):
     preview_audio_path: str
 
 
+class TtsGenerateRequest(BaseModel):
+    voice_id: str
+    text: str
+    format: Literal["wav", "mp3"] = "wav"
+
+
+class TtsGenerateResponse(BaseModel):
+    message: str
+    audio_path: str
+    audio_url: str
+    filename: str
+
+
 class TtsClonePreviewRequest(BaseModel):
-    text: str = "Xin chào, đây là bản thử giọng clone bằng VieNeu Turbo."
+    text: str = "Edge TTS không hỗ trợ clone voice."
     render_options: RenderOptions = Field(default_factory=RenderOptions)
 
 
@@ -383,10 +430,13 @@ class RenderRequest(BaseModel):
     local_video_path: str | None = None
     ytdlp_cookies_file: str | None = None
     ytdlp_cookies_from_browser: str | None = None
+    user_data_dir: str | None = None
     gemini_json: Any
     burn_subtitle: bool = True
     subtitle_mode: SubtitleMode | None = None
     render_options: RenderOptions = Field(default_factory=RenderOptions)
+    output_dir_name: str | None = None
+    output_dir_path: str | None = None
 
     @property
     def effective_subtitle_mode(self) -> SubtitleMode:

@@ -501,7 +501,7 @@ Engine: **VieNeu Turbo** (`vieneu_turbo`)
 | Field | Values | Default |
 |---|---|---|
 | `tts_mode` | `none`, `voiceover` | `none` |
-| `tts_language` | `auto`, `vi`, `en`, `vi_en` | `auto` |
+| ~~`tts_language`~~ | ~~`auto`, `vi`, `en`, `vi_en`~~ | ~~`auto`~~ (removed — dead code, vendor auto-detects) |
 | `tts_persona` | `neutral`, `sports_commentator`, `drama_storyteller`, `news_anchor`, `funny_reviewer`, `podcast_host` | `neutral` |
 | `tts_voice_region` | `auto`, `vi_north`, `vi_south` | `auto` |
 | `tts_voice_gender` | `auto`, `female`, `male` | `female` |

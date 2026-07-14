@@ -6,8 +6,8 @@ Target release:
 - Install folder: `C:\Program Files\MrTris_AUTO`
 - User data: `%LOCALAPPDATA%\MrTris_AUTO`
 - Output videos: `%USERPROFILE%\Videos\AutoReview`
-- UI: default browser at `http://127.0.0.1:<port>`
-- OS: Windows 10/11
+- UI: PyWebView desktop window loading `http://127.0.0.1:<port>`, fallback to browser if WebView2 unavailable
+- OS: Windows 10/11 (WebView2 runtime recommended)
 - Beta signing: unsigned
 
 ## Build Staging Package
@@ -36,6 +36,7 @@ Before building the installer, verify the staged folder contains:
 
 ```text
 runtime\python\python.exe
+runtime\python\pythonw.exe (optional — for console-free main shortcut)
 runtime\python\python312.dll
 runtime\python\python312.zip
 runtime\ffmpeg\ffmpeg.exe
@@ -49,6 +50,8 @@ MrTris_AUTO.py
 MrTris_AUTO_Diagnostics.py
 MrTris_AUTO_Repair.py
 ```
+
+Note: the embedded Python runtime from python.org does **not** include `pythonw.exe`. The main shortcut will show a console window unless you manually add `pythonw.exe` to `runtime\python\`. If `pythonw.exe` is absent, the installer creates a second "(console)" shortcut and the normal shortcut uses `python.exe`.
 
 VieNeu Turbo files must be present under `runtime\tts` or otherwise available to the bundled Python environment. If TTS is missing, the app should still open but TTS status will report unavailable.
 
@@ -192,6 +195,7 @@ npm run build
 build\package\MrTris_AUTO\runtime\ffmpeg\ffmpeg.exe -version
 build\package\MrTris_AUTO\runtime\ffmpeg\ffprobe.exe -version
 build\package\MrTris_AUTO\runtime\node\node.exe --version
+build\package\MrTris_AUTO\runtime\python\python.exe -c "import webview; print('pywebview ok')"
 build\package\MrTris_AUTO\runtime\python\python.exe -m yt_dlp --js-runtimes node --remote-components ejs:github --version
 ```
 
@@ -231,7 +235,7 @@ Run on Windows 10/11 without Python or Node installed:
 
 1. Install `MrTris_AUTO_Setup_v1.0.0_beta.exe`.
 2. Launch `MrTris_AUTO` from Start Menu.
-3. Browser opens the app.
+3. Desktop PyWebView window opens (or browser fallback if WebView2 is missing).
 4. Runtime Health loads.
 5. Preset sync status is OK or repair can sync it.
 6. FFmpeg and FFprobe checks pass.

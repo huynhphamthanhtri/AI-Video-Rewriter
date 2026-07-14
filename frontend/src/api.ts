@@ -1,4 +1,4 @@
-import type { AutoPipelineProgress, BatchProgress, BlurRegion, BlurRenderResponse, BlurUploadResponse, GeminiAutoSubmitResponse, GeminiOpenBrowserResponse, GeminiSessionStatus, LicenseStatus, Preset, PresetCompareResponse, PresetRecommendResponse, PresetSyncStatus, PromptHealthResponse, PromptPreviewResponse, PromptRunStats, RenderJobStatus, RenderOptions, RuntimeHealth, StorageCleanupResponse, StorageStats, SubtitlePreviewStyleResponse, TitleLayoutPreviewResponse, TtsCloneVoice, TtsVoice, UpdateCheckResponse, UpdateLaunchResponse, ValidateJsonResponse } from './types';
+import type { AutoPipelineProgress, BatchProgress, BlurRegion, BlurRenderResponse, BlurUploadResponse, GeminiAutoSubmitResponse, GeminiOpenBrowserResponse, GeminiSessionStatus, LicenseStatus, Preset, PresetCompareResponse, PresetRecommendResponse, PresetSyncStatus, PromptHealthResponse, PromptPreviewResponse, PromptRunStats, RenderJobStatus, RenderOptions, RuntimeHealth, StorageCleanupResponse, StorageStats, SubtitlePreviewStyleResponse, TitleLayoutPreviewResponse, TtsVoice, UpdateCheckResponse, UpdateLaunchResponse, ValidateJsonResponse } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api';
 const USE_MOCK = import.meta.env.VITE_USE_MOCK_API === 'true';
@@ -22,20 +22,34 @@ export async function fetchPresets(): Promise<Preset[]> {
 async function parseError(res: Response, fallback: string): Promise<string> {
   try {
     const data = await res.json();
-    if (Array.isArray(data.detail)) return data.detail.map((d: unknown) => {
-      if (typeof d === 'string') return d;
-      const loc = (d as Record<string, unknown>)?.loc as string[] | undefined;
-      const msg = (d as Record<string, unknown>)?.msg as string | undefined;
-      return loc ? `${loc.join('.')}: ${msg ?? ''}` : (msg ?? JSON.stringify(d));
-    }).join(' | ');
-    return data.detail ?? data.message ?? fallback;
+
+    if (Array.isArray(data.detail)) {
+      return data.detail.map((d: unknown) => {
+        if (typeof d === 'string') return d;
+        const loc = (d as Record<string, unknown>)?.loc as string[] | undefined;
+        const msg = (d as Record<string, unknown>)?.msg as string | undefined;
+        return loc ? `${loc.join('.')}: ${msg ?? ''}` : (msg ?? JSON.stringify(d));
+      }).join(' | ');
+    }
+
+    if (typeof data.detail === 'string') return data.detail;
+
+    if (data.detail && typeof data.detail === 'object') {
+      const detail = data.detail as Record<string, unknown>;
+      if (typeof detail.message === 'string') return detail.message;
+      return JSON.stringify(detail);
+    }
+
+    if (typeof data.message === 'string') return data.message;
+
+    return fallback;
   } catch {
     return fallback;
   }
 }
 
 export async function generatePrompt(payload: Record<string, unknown>): Promise<string> {
-  if (USE_MOCK) return `Bạn là editor chuyên nghiệp. CẤU HÌNH NGÔN NGỮ & BẢN ĐỊA HÓA: target_language=${payload.target_language}, target_market=${payload.target_market}, localization_level=${payload.localization_level}, adaptation_mode=${payload.adaptation_mode}, narrator_persona=${payload.narrator_persona}. Hãy phân tích video ${(payload.youtube_url as string) || ''} và trả JSON EDL với metadata, rewrite_script, srt, video_segments[]. Return ONLY valid JSON.`;
+  if (USE_MOCK) return `Bạn là chuyên gia viết lại nội dung video. Hãy xem video YouTube: ${(payload.youtube_url as string) || ''}. Hãy viết lại nội dung video này thành một bản remake hấp dẫn bằng ${(payload.target_language as string) || 'Tiếng Việt'}.${(payload.user_instruction as string) ? `\nNGƯỜI DÙNG HƯỚNG DẪN THÊM: ${payload.user_instruction}` : ''} Return valid JSON theo schema: { metadata, sources, rewrite_script, srt, video_segments }.`;
   const res = await fetch(`${API_BASE}/generate-prompt`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -54,6 +68,17 @@ export async function validateJson(payload: unknown): Promise<ValidateJsonRespon
     body: JSON.stringify({ payload }),
   });
   if (!res.ok) throw new Error(await parseError(res, 'Không thể validate JSON.'));
+  return res.json();
+}
+
+export async function validateRawJson(raw: string): Promise<ValidateJsonResponse> {
+  if (USE_MOCK) return { valid: false, errors: ['Mock không hỗ trợ raw validate'] };
+  const res = await fetch(`${API_BASE}/validate-json`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ payload: raw }),
+  });
+  if (!res.ok) throw new Error(await parseError(res, 'Không thể validate raw JSON.'));
   return res.json();
 }
 
@@ -189,6 +214,11 @@ export async function clearLicense(): Promise<void> {
   if (!res.ok) throw new Error(await parseError(res, 'Không xóa được license.'));
 }
 
+export async function unbindLicenseDevice(): Promise<void> {
+  const res = await fetch(`${API_BASE}/license/unbind`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+  if (!res.ok) throw new Error(await parseError(res, 'Không hủy liên kết thiết bị được.'));
+}
+
 export async function fetchRenderJobs(): Promise<RenderJobStatus[]> {
   const res = await fetch(`${API_BASE}/render-jobs`);
   if (!res.ok) throw new Error(await parseError(res, 'Không thể lấy render history.'));
@@ -212,9 +242,22 @@ export async function cleanupStorage(payload: { target: 'temp' | 'outputs' | 'al
   return res.json();
 }
 
+export async function cleanupFinalVideos(payload: { older_than_hours: number; dry_run: boolean }): Promise<StorageCleanupResponse> {
+  const res = await fetch(`${API_BASE}/storage/cleanup-final-videos`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target: 'outputs', ...payload }) });
+  if (!res.ok) throw new Error(await parseError(res, 'Không dọn dẹp được video final cũ.'));
+  return res.json();
+}
+
 export async function openOutputFolder(path: string): Promise<void> {
   const res = await fetch(`${API_BASE}/open-folder`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }) });
   if (!res.ok) throw new Error(await parseError(res, 'Không mở được thư mục output.'));
+}
+
+export async function fetchFinalVideosPath(): Promise<string> {
+  const res = await fetch(`${API_BASE}/outputs/final-videos-path`);
+  if (!res.ok) throw new Error('Không lấy được đường dẫn thư mục video.');
+  const data = await res.json();
+  return data.path;
 }
 
 export function fileDownloadUrl(path: string): string {
@@ -284,31 +327,6 @@ export async function saveRenderPreferences(payload: { subtitle_mode: string; re
   if (!res.ok) throw new Error(await parseError(res, 'Không lưu được render preferences.'));
 }
 
-export async function fetchTtsClones(): Promise<{ voices: TtsCloneVoice[] }> {
-  const res = await fetch(`${API_BASE}/tts/clones`);
-  if (!res.ok) throw new Error(await parseError(res, 'Không tải được cloned voices.'));
-  return res.json();
-}
-
-export async function uploadTtsClone(file: File, name: string): Promise<{ message: string; voice: TtsCloneVoice }> {
-  const formData = new FormData();
-  formData.append('file', file);
-  const res = await fetch(`${API_BASE}/tts/clone/upload?name=${encodeURIComponent(name)}`, { method: 'POST', body: formData });
-  if (!res.ok) throw new Error(await parseError(res, 'Không clone giọng được.'));
-  return res.json();
-}
-
-export async function previewTtsClone(cloneId: string, text: string, renderOptions: RenderOptions): Promise<{ message: string; preview_audio_path: string }> {
-  const res = await fetch(`${API_BASE}/tts/clones/${cloneId}/preview`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, render_options: renderOptions }) });
-  if (!res.ok) throw new Error(await parseError(res, 'Không tạo preview clone voice được.'));
-  return res.json();
-}
-
-export async function deleteTtsClone(cloneId: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/tts/clones/${cloneId}`, { method: 'DELETE' });
-  if (!res.ok) throw new Error(await parseError(res, 'Không xóa cloned voice được.'));
-}
-
 export async function fetchTitleLayoutPreview(params: {
   render_options: RenderOptions;
   video_width: number;
@@ -355,6 +373,25 @@ export async function fetchTtsVoicePreview(voiceId: string, text: string): Promi
 
 export function ttsAudioUrl(path: string): string {
   return `${API_BASE}/tts/audio?path=${encodeURIComponent(path)}`;
+}
+
+export async function generateStandaloneTts(payload: {
+  voice_id: string;
+  text: string;
+  format: 'wav' | 'mp3';
+}): Promise<{
+  message: string;
+  audio_path: string;
+  audio_url: string;
+  filename: string;
+}> {
+  const res = await fetch(`${API_BASE}/tts/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(await parseError(res, 'Không thể tạo TTS.'));
+  return res.json();
 }
 
 export async function fetchPromptPreview(payload: Record<string, unknown>, signal?: AbortSignal): Promise<PromptPreviewResponse> {
@@ -447,23 +484,69 @@ export async function cancelAutoPipeline(taskId: string): Promise<void> {
   if (!res.ok) throw new Error(await parseError(res, 'Không thể hủy auto pipeline.'));
 }
 
+function apiBaseToWsBase(): string {
+  if (API_BASE.startsWith('http://')) return API_BASE.replace(/^http:/, 'ws:');
+  if (API_BASE.startsWith('https://')) return API_BASE.replace(/^https:/, 'wss:');
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}${API_BASE}`;
+}
+
+export async function fetchAutoPipelineStatus(
+  taskId: string,
+): Promise<AutoPipelineProgress> {
+  const res = await fetch(`${API_BASE}/gemini/status/${taskId}`);
+  if (!res.ok) throw new Error('Task không tồn tại.');
+  return res.json();
+}
+
+
 export function connectAutoPipelineWS(
   taskId: string,
   onProgress: (data: AutoPipelineProgress) => void,
   onComplete: () => void,
   onError: (error: string) => void,
 ): () => void {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${protocol}//${window.location.host}${API_BASE}/gemini/status/${taskId}`;
+  const wsUrl = `${apiBaseToWsBase()}/gemini/status/${taskId}`;
   const ws = new WebSocket(wsUrl);
   let closed = false;
+  let pollInterval: ReturnType<typeof setInterval> | null = null;
+  let cleanup = false;
+
+  function stopPolling() {
+    if (pollInterval !== null) {
+      clearInterval(pollInterval);
+      pollInterval = null;
+    }
+  }
+
+  function startHttpPolling() {
+    pollInterval = setInterval(async () => {
+      try {
+        const data = await fetchAutoPipelineStatus(taskId);
+        if (cleanup) return;
+        onProgress(data);
+        if (data.status === 'done') {
+          onComplete();
+          stopPolling();
+        } else if (data.status === 'error') {
+          onError(data.error || data.message || 'Pipeline thất bại.');
+          stopPolling();
+        }
+      } catch {
+        if (!cleanup) {
+          onError('Không thể kết nối đến backend để kiểm tra pipeline.');
+          stopPolling();
+        }
+      }
+    }, 2000);
+  }
 
   ws.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data) as AutoPipelineProgress;
       onProgress(data);
       if (data.status === 'done') onComplete();
-      if (data.status === 'error') onError(data.error || data.message || 'Unknown error');
+      if (data.status === 'error') onError(data.error || data.message || 'Backend không trả chi tiết lỗi. Xem logs/error.log hoặc thử restart backend không dùng --reload.');
       if (data.status === 'done' || data.status === 'error') closed = true;
     } catch {
       onError('Failed to parse progress data');
@@ -472,15 +555,23 @@ export function connectAutoPipelineWS(
   };
 
   ws.onerror = () => {
-    if (!closed) onError('WebSocket connection error');
+    if (!closed) {
+      closed = true;
+      startHttpPolling();
+    }
   };
 
   ws.onclose = () => {
+    if (!closed) {
+      startHttpPolling();
+    }
     closed = true;
   };
 
   return () => {
+    cleanup = true;
     closed = true;
+    stopPolling();
     ws.close();
   };
 }
@@ -489,7 +580,7 @@ export async function openGeminiBrowser(userDataDir?: string): Promise<GeminiOpe
   const res = await fetch(`${API_BASE}/gemini/open-browser`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: userDataDir ? JSON.stringify({ user_data_dir: userDataDir }) : undefined,
+    body: JSON.stringify({ user_data_dir: userDataDir ?? null }),
   });
   if (!res.ok) throw new Error(await parseError(res, 'Không thể mở trình duyệt Gemini.'));
   return res.json();

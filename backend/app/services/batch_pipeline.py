@@ -10,6 +10,7 @@ from app.schemas.batch import BatchItemProgress, BatchProgress
 from app.schemas.prompt import PromptGenerateRequest
 from app.services.gemini_automation import GeminiAutomationService, gemini_service
 from app.services.prompt_generator import PromptGenerator
+from app.services.video_tools import ui_safe_error
 
 
 RenderStatusGetter = Callable[[str], dict | None]
@@ -29,9 +30,13 @@ class BatchPipelineService:
         self._batches: dict[str, BatchProgress] = {}
         self._tasks: dict[str, asyncio.Task] = {}
         self._cancel_requested: set[str] = set()
+        self._cancel_render_fn: Callable[[str], None] | None = None
 
     def set_render_status_getter(self, getter: RenderStatusGetter) -> None:
         self.render_status_getter = getter
+
+    def set_cancel_render_fn(self, fn: Callable[[str], None]) -> None:
+        self._cancel_render_fn = fn
 
     def start(
         self,
@@ -40,8 +45,12 @@ class BatchPipelineService:
         render_options: dict,
         subtitle_mode: str,
         ytdlp_cookies_file: str | None = None,
+        ytdlp_cookies_from_browser: str | None = None,
         local_video_path: str | None = None,
         user_data_dir: str | None = None,
+        headless: bool | None = None,
+        gemini_thinking_mode: str = "extended",
+        gemini_analysis_mode: str = "deep_analysis",
     ) -> BatchProgress:
         urls = self._extract_urls(form_data)
         batch_id = str(uuid.uuid4())
@@ -59,8 +68,12 @@ class BatchPipelineService:
                 render_options=render_options,
                 subtitle_mode=subtitle_mode,
                 ytdlp_cookies_file=ytdlp_cookies_file,
+                ytdlp_cookies_from_browser=ytdlp_cookies_from_browser,
                 local_video_path=local_video_path,
                 user_data_dir=user_data_dir,
+                headless=headless,
+                gemini_thinking_mode=gemini_thinking_mode,
+                gemini_analysis_mode=gemini_analysis_mode,
             )
         )
         return batch
@@ -84,6 +97,11 @@ class BatchPipelineService:
                 item.ended_at = batch.ended_at
                 if item.task_id:
                     self.automation_service.cancel(item.task_id)
+                if item.job_id and self._cancel_render_fn:
+                    try:
+                        self._cancel_render_fn(item.job_id)
+                    except Exception:
+                        pass
         return True
 
     def _extract_urls(self, form_data: dict) -> list[str]:
@@ -110,8 +128,12 @@ class BatchPipelineService:
         render_options: dict,
         subtitle_mode: str,
         ytdlp_cookies_file: str | None,
+        ytdlp_cookies_from_browser: str | None = None,
         local_video_path: str | None,
         user_data_dir: str | None,
+        headless: bool | None = None,
+        gemini_thinking_mode: str = "extended",
+        gemini_analysis_mode: str = "deep_analysis",
     ) -> None:
         batch = self._batches[batch_id]
         batch.status = "running"
@@ -129,13 +151,20 @@ class BatchPipelineService:
                     render_options=render_options,
                     subtitle_mode=subtitle_mode,
                     ytdlp_cookies_file=ytdlp_cookies_file,
+                    ytdlp_cookies_from_browser=ytdlp_cookies_from_browser,
                     local_video_path=local_video_path,
                     user_data_dir=user_data_dir,
+                    headless=headless,
+                    gemini_thinking_mode=gemini_thinking_mode,
+                    gemini_analysis_mode=gemini_analysis_mode,
                 )
             self._finish_batch(batch)
         except Exception as exc:  # noqa: BLE001
             batch.status = "error"
-            batch.error = str(exc)
+            msg = ui_safe_error(str(exc))
+            if not msg:
+                msg = f"{type(exc).__name__}: lỗi nội bộ khi xử lý batch pipeline."
+            batch.error = msg
             batch.ended_at = time.time()
 
     async def _run_item(
@@ -147,8 +176,12 @@ class BatchPipelineService:
         render_options: dict,
         subtitle_mode: str,
         ytdlp_cookies_file: str | None,
+        ytdlp_cookies_from_browser: str | None = None,
         local_video_path: str | None,
         user_data_dir: str | None,
+        headless: bool | None = None,
+        gemini_thinking_mode: str = "extended",
+        gemini_analysis_mode: str = "deep_analysis",
     ) -> None:
         item.status = "running"
         item.started_at = time.time()
@@ -163,13 +196,20 @@ class BatchPipelineService:
                 "youtube_url": item.source_url,
                 "local_video_path": local_video_path,
                 "ytdlp_cookies_file": ytdlp_cookies_file,
+                "ytdlp_cookies_from_browser": ytdlp_cookies_from_browser,
+                "user_data_dir": user_data_dir,
                 "burn_subtitle": subtitle_mode == "burn",
                 "subtitle_mode": subtitle_mode,
                 "render_options": render_options,
                 "gemini_json": {},
+                "output_dir_name": form_data.get("output_dir_name"),
+                "output_dir_path": form_data.get("output_dir_path"),
             }
             task_id = str(uuid.uuid4())
-            task = self.automation_service.start(task_id, prompt, render_payload, user_data_dir)
+            task = self.automation_service.start(task_id, prompt, render_payload, user_data_dir, headless=headless,
+                                                     thinking_mode=gemini_thinking_mode,
+                                                     analysis_mode=gemini_analysis_mode,
+                                                     form_data=item_form)
             item.task_id = task_id
 
             while task.status == "running":
@@ -184,7 +224,7 @@ class BatchPipelineService:
             item.states = list(task.states)
             if task.status == "error":
                 item.status = "error"
-                item.error = task.error or task.message
+                item.error = task.error or task.message or "Auto pipeline item failed without error detail. Xem logs/error.log."
                 item.ended_at = time.time()
                 return
             if task.result and task.result.get("cancelled"):
@@ -201,7 +241,7 @@ class BatchPipelineService:
                 item.ended_at = time.time()
                 return
 
-            render_status = await self._wait_for_render_job(batch.batch_id, item.job_id)
+            render_status = await self._wait_for_render_job(batch.batch_id, item, item.job_id)
             if batch.batch_id in self._cancel_requested:
                 item.status = "cancelled"
                 item.ended_at = time.time()
@@ -217,18 +257,27 @@ class BatchPipelineService:
             item.ended_at = time.time()
         except Exception as exc:  # noqa: BLE001
             item.status = "error"
-            item.error = str(exc)
+            msg = ui_safe_error(str(exc))
+            if not msg:
+                msg = f"{type(exc).__name__}: lỗi nội bộ khi chạy batch item."
+            item.error = msg
             item.ended_at = time.time()
 
-    async def _wait_for_render_job(self, batch_id: str, job_id: str) -> dict[str, Any]:
+    async def _wait_for_render_job(self, batch_id: str, item: BatchItemProgress, job_id: str) -> dict[str, Any]:
         if self.render_status_getter is None:
             raise RuntimeError("Batch render status getter is not configured.")
         while True:
             if batch_id in self._cancel_requested:
+                if job_id and self._cancel_render_fn:
+                    try:
+                        self._cancel_render_fn(job_id)
+                    except Exception:
+                        pass
                 return {"status": "cancelled", "message": "Batch cancelled."}
             status = self.render_status_getter(job_id)
             if status is None:
                 raise RuntimeError("Render job không tồn tại.")
+            item.render_status = status
             if status.get("status") in {"done", "error", "cancelled"}:
                 return status
             await self.sleep_fn(2.0)
@@ -251,7 +300,8 @@ class BatchPipelineService:
             batch.status = "cancelled"
             return
         batch.status = "error"
-        batch.error = "All batch items failed."
+        first_error = next((item.error for item in batch.items if item.error), "")
+        batch.error = first_error and f"All batch items failed. Error đầu tiên: {first_error}" or "All batch items failed."
 
 
 batch_service = BatchPipelineService()

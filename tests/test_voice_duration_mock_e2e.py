@@ -141,29 +141,31 @@ def test_voice_duration_mocked_e2e_footage_extend_and_freeze(monkeypatch: pytest
     footage = _run_case(monkeypatch, "footage_extend", source_duration=8.0, voice_duration=5.0)
     freeze = _run_case(monkeypatch, "freeze_frame", source_duration=4.0, voice_duration=6.0)
 
+    # Both cases now use sync_speed_balance instead of extend/freeze
     footage_plan = footage["segment_plan"]
-    assert footage_plan["decision"] == "footage_extend"
+    v_speed = 0.92  # SAFE_VIDEO_MIN_SOFT
+    eff_scene = 4.0 / v_speed  # 4.348
+    assert footage_plan["decision"] == "sync_speed_balance"
     assert footage_plan["original_scene_duration"] == pytest.approx(4.0)
-    assert footage_plan["final_scene_duration"] == pytest.approx(5.0)
+    assert footage_plan["final_scene_duration"] == pytest.approx(eff_scene, rel=1e-2)
     assert footage_plan["natural_voice_duration"] == pytest.approx(5.0)
-    assert footage_plan["extend_seconds"] == pytest.approx(1.0)
-    assert footage["video_segment"]["source_end"] == "00:00:05.000"
-    assert footage["video_duration"] >= footage["voiceover_duration"] - 0.10
-    assert footage["voiceover_duration"] >= 4.90
+    assert footage_plan["extend_seconds"] == 0.0
+    assert footage_plan["video_speed_factor"] == v_speed
+    assert footage["video_segment"]["source_end"] == "00:00:04.000"  # no extend
+    assert footage["video_duration"] >= footage["voiceover_duration"] - 0.15
+    assert footage["video_duration"] == pytest.approx(eff_scene, abs=0.15)
 
     freeze_plan = freeze["segment_plan"]
-    assert freeze_plan["decision"] == "freeze_frame"
+    assert freeze_plan["decision"] == "sync_speed_balance"
     assert freeze_plan["original_scene_duration"] == pytest.approx(4.0)
-    assert freeze_plan["final_scene_duration"] == pytest.approx(6.0)
+    assert freeze_plan["final_scene_duration"] == pytest.approx(eff_scene, rel=1e-2)
     assert freeze_plan["natural_voice_duration"] == pytest.approx(6.0)
-    assert freeze_plan["extend_seconds"] == pytest.approx(2.0)
-    assert freeze_plan["freeze_duration"] == pytest.approx(2.0)
+    assert freeze_plan["extend_seconds"] == 0.0
+    assert freeze_plan["video_speed_factor"] == v_speed
     assert freeze["video_segment"]["source_end"] == "00:00:04.000"
-    assert freeze["video_segment"]["freeze_frame_duration"] == pytest.approx(2.0)
-    assert freeze["video_duration"] == pytest.approx(6.0, abs=0.15)
-    assert freeze["video_duration"] != pytest.approx(8.0, abs=0.15)
-    assert freeze["video_duration"] >= freeze["voiceover_duration"] - 0.10
-    assert freeze["voiceover_duration"] >= 5.90
+    assert freeze["video_segment"].get("freeze_frame_duration") is None
+    assert freeze["video_duration"] == pytest.approx(eff_scene, abs=0.15)
+    assert freeze["video_duration"] >= freeze["voiceover_duration"] - 0.15
 
     summary_path = ARTIFACT_ROOT / "summary.json"
     summary_path.write_text(json.dumps({"footage_extend": footage, "freeze_frame": freeze}, ensure_ascii=False, indent=2), encoding="utf-8")

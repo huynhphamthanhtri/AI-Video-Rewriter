@@ -18,6 +18,7 @@ class BatchItemProgress(BaseModel):
     states: list[dict] = Field(default_factory=list)
     result: dict | None = None
     error: str | None = None
+    render_status: dict | None = None
     started_at: float | None = None
     ended_at: float | None = None
 

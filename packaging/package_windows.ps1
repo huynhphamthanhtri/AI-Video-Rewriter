@@ -46,25 +46,27 @@ function New-PortablePython($RuntimeRoot) {
   ) | Set-Content -LiteralPath $PthFile.FullName -Encoding ASCII
 
   $ReqBase = Join-Path $RepoRoot "backend\requirements.txt"
-  $ReqTts = Join-Path $RepoRoot "backend\requirements-tts.txt"
   $ReqRuntime = Join-Path $CacheRoot "requirements-runtime.txt"
   Get-Content -LiteralPath $ReqBase | Where-Object { $_.Trim() -and $_.Trim() -notmatch '^pytest==' } | Set-Content -LiteralPath $ReqRuntime -Encoding ASCII
   Write-Host "Installing backend dependencies into portable runtime..."
-  python -m pip install --upgrade --target $SitePackages -r $ReqRuntime
+  $PipPython = if (Test-Path (Join-Path $RepoRoot ".venv312\Scripts\python.exe")) { Join-Path $RepoRoot ".venv312\Scripts\python.exe" } else { "python" }
+  & $PipPython -m pip install --upgrade --target $SitePackages -r $ReqRuntime
   if ($LASTEXITCODE -ne 0) { throw "Failed to install backend dependencies into portable runtime." }
 
-  $VenvSitePackages = Join-Path $RepoRoot ".venv312\Lib\site-packages"
-  if (Test-Path -LiteralPath $VenvSitePackages) {
-    Write-Host "Copying installed TTS/runtime packages from .venv312 site-packages into portable runtime..."
-    Copy-Tree $VenvSitePackages $SitePackages
-  } elseif (Test-Path -LiteralPath $ReqTts) {
-    Write-Host "Installing bundled VieNeu Turbo dependencies into portable runtime..."
-    python -m pip install --upgrade --target $SitePackages -r $ReqTts
-    if ($LASTEXITCODE -ne 0) { throw "Failed to install VieNeu Turbo dependencies and .venv312 site-packages fallback is unavailable." }
-  }
+  # Install Playwright + Chromium in portable Python
+  $PortablePython = Join-Path $PythonRoot "python.exe"
+  Write-Host "Installing Playwright Chromium into portable runtime..."
+  & $PortablePython -m playwright install chromium
+  if ($LASTEXITCODE -ne 0) { throw "Portable playwright install chromium failed." }
+  Write-Host "Playwright Chromium installed into portable runtime."
 
-  & (Join-Path $PythonRoot "python.exe") -c "import fastapi, uvicorn, sqlalchemy, pydantic, yt_dlp; import vieneu; print('portable python ok')"
+  & $PortablePython -c "import fastapi, uvicorn, sqlalchemy, pydantic, yt_dlp, webview, edge_tts; print('portable python ok; edge tts ok; pywebview ok')"
   if ($LASTEXITCODE -ne 0) { throw "Portable Python import smoke test failed." }
+
+  # Verify Playwright + Chromium launch inside portable Python
+  Write-Host "Verifying Playwright Chromium can launch headless..."
+  & $PortablePython -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.launch(headless=True); b.close(); p.stop(); print('playwright+chromium headless OK')"
+  if ($LASTEXITCODE -ne 0) { throw "Portable Python Playwright Chromium smoke test failed." }
 }
 
 function New-PortableNode($RuntimeRoot) {
@@ -96,6 +98,30 @@ function Resolve-RealTool($CommandName, $ChocolateyRelativePath) {
     if (Test-Path -LiteralPath $chocoReal) { return $chocoReal }
   }
   return $source
+}
+
+function Copy-PlaywrightBrowsers($RuntimeRoot) {
+  $PlaywrightSrc = Join-Path $env:USERPROFILE "AppData\Local\ms-playwright"
+  $PlaywrightDst = Join-Path $RuntimeRoot "playwright-browsers"
+  if (!(Test-Path -LiteralPath $PlaywrightSrc)) {
+    Write-Host "WARNING: No ms-playwright directory at $PlaywrightSrc. Chromium will download on first launch."
+    return
+  }
+  Write-Host "Copying Playwright browsers from $PlaywrightSrc to $PlaywrightDst ..."
+  New-Item -ItemType Directory -Force -Path $PlaywrightDst | Out-Null
+  # Only copy chromium, chromium_headless_shell, ffmpeg, and winldd (skip firefox, webkit)
+  Get-ChildItem -LiteralPath $PlaywrightSrc -Directory | Where-Object {
+    $_.Name -match '^chromium-\d+$|^chromium_headless_shell-\d+$|^ffmpeg-\d+$|^winldd-\d+$'
+  } | ForEach-Object {
+    Write-Host "  -> $($_.Name)"
+    Copy-Tree $_.FullName (Join-Path $PlaywrightDst $_.Name)
+  }
+  # Also copy .links (playwright uses it to resolve correct browser path)
+  $LinksSrc = Join-Path $PlaywrightSrc ".links"
+  if (Test-Path -LiteralPath $LinksSrc) {
+    Copy-Tree $LinksSrc (Join-Path $PlaywrightDst ".links")
+  }
+  Write-Host "Playwright browsers copied."
 }
 
 if (!$SkipTests) {
@@ -149,6 +175,34 @@ $TtsDir = Join-Path $RuntimeRoot "tts"
 New-Item -ItemType Directory -Force -Path $TtsDir | Out-Null
 if (Test-Path -LiteralPath (Join-Path $RepoRoot "models")) { Copy-Tree (Join-Path $RepoRoot "models") (Join-Path $TtsDir "models") }
 if (Test-Path -LiteralPath (Join-Path $RepoRoot "voices")) { Copy-Tree (Join-Path $RepoRoot "voices") (Join-Path $TtsDir "voices") }
+
+# Copy Playwright browsers into runtime for offline use
+Copy-PlaywrightBrowsers $RuntimeRoot
+
+# Clean up stale preset files no longer in the voice list
+$StalePresetsDir = Join-Path $AppRoot "backend\app\services\tts_voices\presets"
+$StalePresets = @("thai_son")
+foreach ($stale in $StalePresets) {
+  $stalePath = Join-Path $StalePresetsDir $stale
+  if (Test-Path -LiteralPath $stalePath) {
+    Write-Host "Removing stale preset: $stale"
+    Remove-Item -LiteralPath $stalePath -Recurse -Force
+  }
+}
+
+# Set environment for portable Python smoke tests
+$PortablePython = Join-Path $RuntimeRoot "python\python.exe"
+$PwBrowsers = Join-Path $RuntimeRoot "playwright-browsers"
+if (Test-Path -LiteralPath $PwBrowsers) {
+  $env:PLAYWRIGHT_BROWSERS_PATH = $PwBrowsers
+}
+# Final comprehensive smoke test
+Write-Host "Running final comprehensive smoke tests..."
+& $PortablePython -c "import fastapi, uvicorn, sqlalchemy, pydantic, yt_dlp, webview, edge_tts; print('critical imports OK')"
+if ($LASTEXITCODE -ne 0) { throw "Portable Python critical imports failed." }
+
+& $PortablePython -c "from playwright.sync_api import sync_playwright; p=sync_playwright().start(); b=p.chromium.launch(headless=True); b.close(); p.stop(); print('playwright chromium headless OK')"
+if ($LASTEXITCODE -ne 0) { throw "Portable Python Playwright smoke test failed." }
 
 $LauncherTarget = Join-Path $AppRoot "MrTris_AUTO.py"
 Copy-Item -LiteralPath (Join-Path $RepoRoot "packaging\launcher\mrtris_auto_launcher.py") -Destination $LauncherTarget -Force

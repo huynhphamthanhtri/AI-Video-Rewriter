@@ -1,78 +1,148 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import math
-import os
 import re
 import shutil
+import subprocess
+import threading
 import time
 import uuid
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Coroutine
 
 from app.core.config import settings
-from app.schemas.render import GeminiPayloadSchema, RenderOptions, srt_timestamp_to_seconds
+from app.schemas.render import GeminiPayloadSchema, RenderOptions, seconds_to_srt_timestamp, srt_timestamp_to_seconds
 
+logger = logging.getLogger(__name__)
 
-VIENEU_TURBO_VOICES = [
-    {"id": "ly", "vieneu_id": "Bích Ngọc (Nữ - Miền Bắc)", "label": "Ly", "description": "Nữ miền Bắc, trung tính, dễ nghe", "gender": "female", "region": "vi_north", "languages": ["vi", "en", "vi_en"], "recommended_for": ["neutral", "drama_storyteller", "podcast_host"]},
-    {"id": "ngoc", "vieneu_id": "Bích Ngọc (Nữ - Miền Bắc)", "label": "Ngọc", "description": "Nữ miền Bắc, rõ và sáng", "gender": "female", "region": "vi_north", "languages": ["vi", "en", "vi_en"], "recommended_for": ["neutral", "news_anchor"]},
-    {"id": "tuyen", "vieneu_id": "Phạm Tuyên (Nam - Miền Bắc)", "label": "Tuyên", "description": "Nam miền Bắc, thuyết minh rõ", "gender": "male", "region": "vi_north", "languages": ["vi", "en", "vi_en"], "recommended_for": ["neutral", "news_anchor", "sports_commentator"]},
-    {"id": "binh", "vieneu_id": "Phạm Tuyên (Nam - Miền Bắc)", "label": "Bình", "description": "Nam miền Bắc, trầm ổn", "gender": "male", "region": "vi_north", "languages": ["vi", "en", "vi_en"], "recommended_for": ["neutral", "podcast_host"]},
-    {"id": "doan", "vieneu_id": "Thục Đoan (Nữ - Miền Nam)", "label": "Đoan", "description": "Nữ miền Nam, tự nhiên", "gender": "female", "region": "vi_south", "languages": ["vi", "en", "vi_en"], "recommended_for": ["neutral", "funny_reviewer", "drama_storyteller"]},
-    {"id": "vinh", "vieneu_id": "Xuân Vĩnh (Nam - Miền Nam)", "label": "Vĩnh", "description": "Nam miền Nam, thân thiện", "gender": "male", "region": "vi_south", "languages": ["vi", "en", "vi_en"], "recommended_for": ["neutral", "sports_commentator", "podcast_host"]},
+MAX_RAW_CUE_DURATION = 12.0
+CHARS_PER_SEC_THRESHOLD = 8.0
+MIN_CPS_CHECK_DURATION = 3.0
+
+TTS_PREVIEWS_DIR = settings.temp_dir / "tts_voice_previews"
+TTS_STUDIO_OUTPUTS_DIR = settings.temp_dir / "tts_studio_outputs"
+TTS_STUDIO_MAX_CHARS = 10000
+ALLOWED_STUDIO_FORMATS = frozenset({"wav", "mp3"})
+TTS_OVERLAP_HARD_FAIL_SECONDS = 0.25
+
+EDGE_TTS_VOICES = [
+    {"id": "vi-VN-HoaiMyNeural", "label": "HoaiMy", "description": "Vietnamese female neural voice", "gender": "female", "languages": ["vi"], "locale": "vi-VN", "rank": 1, "best_for": "Vietnamese"},
+    {"id": "vi-VN-NamMinhNeural", "label": "NamMinh", "description": "Vietnamese male neural voice", "gender": "male", "languages": ["vi"], "locale": "vi-VN", "rank": 2, "best_for": "Vietnamese"},
+    {"id": "en-US-JennyNeural", "label": "Jenny", "description": "US English female neural voice", "gender": "female", "languages": ["en"], "locale": "en-US", "rank": 1, "best_for": "English US"},
+    {"id": "en-US-GuyNeural", "label": "Guy", "description": "US English male neural voice", "gender": "male", "languages": ["en"], "locale": "en-US", "rank": 2, "best_for": "English US"},
+    {"id": "de-DE-KatjaNeural", "label": "Katja", "description": "German female neural voice", "gender": "female", "languages": ["de"], "locale": "de-DE", "rank": 1, "best_for": "German"},
+    {"id": "de-DE-ConradNeural", "label": "Conrad", "description": "German male neural voice", "gender": "male", "languages": ["de"], "locale": "de-DE", "rank": 2, "best_for": "German"},
+    {"id": "ja-JP-NanamiNeural", "label": "Nanami", "description": "Japanese female neural voice", "gender": "female", "languages": ["ja"], "locale": "ja-JP", "rank": 1, "best_for": "Japanese"},
+    {"id": "ja-JP-KeitaNeural", "label": "Keita", "description": "Japanese male neural voice", "gender": "male", "languages": ["ja"], "locale": "ja-JP", "rank": 2, "best_for": "Japanese"},
+    {"id": "es-MX-DaliaNeural", "label": "Dalia", "description": "Mexican Spanish female neural voice", "gender": "female", "languages": ["es"], "locale": "es-MX", "rank": 1, "best_for": "Spanish Mexico"},
+    {"id": "es-MX-JorgeNeural", "label": "Jorge", "description": "Mexican Spanish male neural voice", "gender": "male", "languages": ["es"], "locale": "es-MX", "rank": 2, "best_for": "Spanish Mexico"},
+    {"id": "ko-KR-SunHiNeural", "label": "SunHi", "description": "Korean female neural voice", "gender": "female", "languages": ["ko"], "locale": "ko-KR", "rank": 1, "best_for": "Korean"},
+    {"id": "ko-KR-InJoonNeural", "label": "InJoon", "description": "Korean male neural voice", "gender": "male", "languages": ["ko"], "locale": "ko-KR", "rank": 2, "best_for": "Korean"},
 ]
 
 
-def list_vieneu_turbo_voices() -> list[dict[str, Any]]:
-    return [{key: value for key, value in voice.items() if key != "vieneu_id"} for voice in VIENEU_TURBO_VOICES]
+def list_edge_tts_voices() -> list[dict[str, Any]]:
+    return sorted(EDGE_TTS_VOICES, key=lambda v: (v.get("rank", 99), v.get("locale", ""), v.get("id", "")))
 
 
-def tts_clones_dir() -> Path:
-    return settings.temp_dir / "tts_voices"
+def tts_studio_outputs_dir() -> Path:
+    TTS_STUDIO_OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+    return TTS_STUDIO_OUTPUTS_DIR
 
 
-def list_cloned_voices() -> list[dict[str, Any]]:
-    root = tts_clones_dir()
-    if not root.exists():
-        return []
-    items: list[dict[str, Any]] = []
-    for meta_path in root.glob("*/metadata.json"):
-        try:
-            items.append(json.loads(meta_path.read_text(encoding="utf-8")))
-        except (OSError, json.JSONDecodeError):
-            continue
-    return sorted(items, key=lambda item: item.get("created_at", 0), reverse=True)
+def generate_standalone_tts(
+    voice_id: str,
+    text: str,
+    output_format: str = "wav",
+) -> Path:
+    voice_data = next((v for v in EDGE_TTS_VOICES if v["id"] == voice_id), None)
+    if not voice_data:
+        valid_ids = ", ".join(v["id"] for v in EDGE_TTS_VOICES)
+        raise ValueError(f"Voice '{voice_id}' không tồn tại. Các voice có sẵn: {valid_ids}")
+
+    if output_format not in ALLOWED_STUDIO_FORMATS:
+        raise ValueError(f"Format không hợp lệ: '{output_format}'. Chỉ hỗ trợ: {', '.join(sorted(ALLOWED_STUDIO_FORMATS))}.")
+
+    cleaned = _normalize_tts_text(text)
+    if not cleaned:
+        raise ValueError("Text rỗng sau khi normalize. Vui lòng nhập nội dung cần chuyển giọng.")
+
+    if len(cleaned) > TTS_STUDIO_MAX_CHARS:
+        raise ValueError(f"Text quá dài ({len(cleaned)} ký tự). Tối đa {TTS_STUDIO_MAX_CHARS} ký tự.")
+
+    output_dir = tts_studio_outputs_dir()
+    stem = f"tts_studio_{uuid.uuid4().hex}"
+    wav_path = output_dir / f"{stem}.wav"
+
+    EdgeTtsSynthesizer().synthesize_to_file(
+        cleaned,
+        wav_path,
+        RenderOptions(tts_voice_id=voice_id),
+        voice_data,
+    )
+
+    if output_format == "mp3":
+        mp3_path = output_dir / f"{stem}.mp3"
+        _run([
+            settings.ffmpeg_binary, "-y", "-i", str(wav_path),
+            "-codec:a", "libmp3lame", "-b:a", "192k",
+            str(mp3_path),
+        ])
+        wav_path.unlink(missing_ok=True)
+        return mp3_path
+
+    return wav_path
 
 
-def get_cloned_voice(clone_id: str) -> dict[str, Any]:
-    meta_path = tts_clones_dir() / clone_id / "metadata.json"
-    if not meta_path.exists():
-        raise FileNotFoundError("Clone voice không tồn tại.")
-    return json.loads(meta_path.read_text(encoding="utf-8"))
+def _metadata_language(payload: GeminiPayloadSchema | None) -> str:
+    if not payload:
+        return ""
+    return " ".join([payload.metadata.target_language or "", payload.metadata.target_market or ""]).lower()
 
 
-def clone_voice_embedding_path(clone_id: str) -> Path:
-    return tts_clones_dir() / clone_id / "voice.npy"
+def _language_voice_prefix(language: str) -> str:
+    if "japanese" in language or "tiếng nhật" in language or "nhật" in language:
+        return "ja-JP"
+    if "korean" in language or "tiếng hàn" in language or "hàn" in language:
+        return "ko-KR"
+    if "german" in language or "tiếng đức" in language or "đức" in language:
+        return "de-DE"
+    if "spanish" in language or "mexico" in language or "mexican" in language or "tiếng tây ban nha" in language:
+        return "es-MX"
+    if "english" in language or "tiếng anh" in language or "mỹ" in language or "us" in language:
+        return "en-US"
+    return "vi-VN"
 
 
-def resolve_vieneu_voice(options: RenderOptions) -> dict[str, Any]:
-    by_id = {voice["id"]: voice for voice in VIENEU_TURBO_VOICES}
-    if options.tts_voice_id != "auto":
-        if options.tts_voice_id in by_id:
-            return by_id[options.tts_voice_id]
-    candidates = [v for v in VIENEU_TURBO_VOICES if v["gender"] == (options.tts_voice_gender if options.tts_voice_gender != "auto" else "female")]
-    if options.tts_voice_region != "auto":
-        region_candidates = [v for v in candidates if v["region"] == options.tts_voice_region]
-        if region_candidates:
-            candidates = region_candidates
-    if options.tts_persona != "neutral":
-        persona_matches = [v for v in candidates if options.tts_persona in v.get("recommended_for", [])]
-        if persona_matches:
-            candidates = persona_matches
-    return candidates[0]
+def alternate_edge_tts_voice(voice_data: dict[str, Any]) -> dict[str, Any] | None:
+    voice_id = voice_data.get("id")
+    locale = voice_data.get("locale")
+    if not voice_id or not locale:
+        return None
+    candidates = [voice for voice in EDGE_TTS_VOICES if voice.get("locale") == locale and voice.get("id") != voice_id]
+    return sorted(candidates, key=lambda v: (v.get("rank", 99), v.get("id", "")))[0] if candidates else None
+
+
+def resolve_edge_tts_voice(options: RenderOptions, payload: GeminiPayloadSchema | None = None) -> dict[str, Any]:
+    by_id = {voice["id"]: voice for voice in EDGE_TTS_VOICES}
+    prefix = _language_voice_prefix(_metadata_language(payload))
+    if options.tts_voice_id != "auto" and options.tts_voice_id in by_id:
+        selected = by_id[options.tts_voice_id]
+        if selected["id"].startswith(prefix):
+            return selected
+        logger.warning("Ignoring TTS voice %s because target language expects %s", options.tts_voice_id, prefix)
+    gender = options.tts_voice_gender if options.tts_voice_gender != "auto" else "female"
+    matches = [voice for voice in EDGE_TTS_VOICES if voice["id"].startswith(prefix) and voice["gender"] == gender]
+    if matches:
+        return sorted(matches, key=lambda v: (v.get("rank", 99), v["id"]))[0]
+    prefix_matches = [voice for voice in EDGE_TTS_VOICES if voice["id"].startswith(prefix)]
+    if prefix_matches:
+        return sorted(prefix_matches, key=lambda v: (v.get("rank", 99), v["id"]))[0]
+    return by_id["vi-VN-HoaiMyNeural"]
 
 
 @dataclass
@@ -91,13 +161,51 @@ class TtsCuePlan:
 
 
 def _run(cmd: list[str]) -> None:
-    subprocess.run(cmd, check=True, capture_output=True, text=True)
+    exe = cmd[0] if cmd else ""
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    except FileNotFoundError:
+        raise RuntimeError(f"Không tìm thấy executable: {exe}. Hãy chạy launcher dev mode với FFmpeg trên PATH hoặc build runtime package.") from None
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or exc.stdout or str(exc)).strip()
+        raise RuntimeError(detail or f"Lệnh thất bại: {' '.join(cmd)}") from exc
+
+
+def _run_async(coro: Coroutine[Any, Any, Any]) -> Any:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    result: dict[str, Any] = {}
+
+    def runner() -> None:
+        try:
+            result["value"] = asyncio.run(coro)
+        except BaseException as exc:  # noqa: BLE001
+            result["error"] = exc
+
+    thread = threading.Thread(target=runner, daemon=True)
+    thread.start()
+    thread.join()
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
 
 
 def probe_audio_duration(path: Path) -> float:
     cmd = [settings.ffprobe_binary, "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(path)]
     try:
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        return float(result.stdout.strip() or 0)
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        return 0.0
+
+
+def probe_media_duration(path: Path) -> float:
+    cmd = [settings.ffprobe_binary, "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", str(path)]
+    try:
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
         return float(result.stdout.strip() or 0)
     except (OSError, subprocess.CalledProcessError, ValueError):
         return 0.0
@@ -106,7 +214,7 @@ def probe_audio_duration(path: Path) -> float:
 def video_has_audio(path: Path) -> bool:
     cmd = [settings.ffprobe_binary, "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=index", "-of", "csv=p=0", str(path)]
     try:
-        result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
         return bool(result.stdout.strip())
     except (OSError, subprocess.CalledProcessError):
         return False
@@ -122,46 +230,6 @@ def _atempo_filter(speed: float) -> str:
     return ",".join(parts)
 
 
-def normalize_text_for_vietnamese_tts(text: str) -> str:
-    result = text
-    number_pattern = re.compile(r'\b(\d{1,3}(?:,\d{3})*)(?:\.(\d+))?\b')
-    def _convert_number(m: re.Match) -> str:
-        int_part = m.group(1)
-        dec_part = m.group(2)
-        has_thousands = "," in int_part
-        if has_thousands:
-            int_part = int_part.replace(",", ".")
-        if dec_part is not None:
-            return f"{int_part},{dec_part}"
-        return int_part
-
-    result = number_pattern.sub(_convert_number, result)
-    replacements = [
-        (r'\$(\d[\d,.]*)', r'\1 đô la'),
-        (r'(\d[\d,.]*)\s*\$', r'\1 đô la'),
-        (r'(\d[\d,.]*)\s*km', r'\1 ki-lô-mét'),
-        (r'(\d[\d,.]*)\s*kg', r'\1 ki-lô-gam'),
-        (r'(\d[\d,.]*)\s*%', r'\1 phần trăm'),
-        (r'(\d[\d,.]*)\s*°C', r'\1 độ C'),
-        (r'(\d[\d,.]*)\s*cm', r'\1 xăng-ti-mét'),
-        (r'(\d[\d,.]*)\s*mm', r'\1 mi-li-mét'),
-    ]
-    for pattern, repl in replacements:
-        result = re.sub(pattern, repl, result, flags=re.IGNORECASE)
-    result = re.sub(r'\bCEO\b', 'si-ai-âu', result, flags=re.IGNORECASE)
-    result = re.sub(r'\bOK\b', 'âu-kây', result, flags=re.IGNORECASE)
-    result = re.sub(r'\bSP\s*500\b', 'ét-pi năm trăm', result, flags=re.IGNORECASE)
-    result = re.sub(r'\bUSA\b', 'u ét a', result, flags=re.IGNORECASE)
-    result = re.sub(r'\bFBI\b', 'ép bi ai', result, flags=re.IGNORECASE)
-    result = re.sub(r'\bCIA\b', 'xi ai ê', result, flags=re.IGNORECASE)
-    result = re.sub(r'\bGPS\b', 'gì pi ét', result, flags=re.IGNORECASE)
-    result = re.sub(r'\bWiFi\b', 'uai-fai', result, flags=re.IGNORECASE)
-    result = re.sub(r'\b4K\b', 'bốn kay', result, flags=re.IGNORECASE)
-    result = re.sub(r'\b8K\b', 'tám kay', result, flags=re.IGNORECASE)
-    result = re.sub(r'\bHD\b', 'hát-đê', result, flags=re.IGNORECASE)
-    return result
-
-
 def _percentile(values: list[float], percentile: float) -> float:
     if not values:
         return 1.0
@@ -170,44 +238,76 @@ def _percentile(values: list[float], percentile: float) -> float:
     return ordered[index]
 
 
-class VieneuTurboSynthesizer:
-    def __init__(self, emotion: str = "natural"):
+def _normalize_tts_text(text: str) -> str:
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", " ", text)
+    text = text.replace("…", "...").replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+    return re.sub(r"\s+", " ", text).strip()
+
+
+class EdgeTtsSynthesizer:
+    MAX_RETRIES = 3
+    RETRY_DELAY_SECONDS = 2
+
+    @staticmethod
+    def _is_transient_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        markers = [
+            "no audio was received",
+            "connection",
+            "timeout",
+            "websocket",
+            "server disconnected",
+            "cannot connect",
+            "eof",
+            "reset",
+            "broken",
+            "unreachable",
+        ]
+        return any(m in msg for m in markers)
+
+    def synthesize_to_file(self, text: str, output_path: Path, options: RenderOptions, voice_data: dict[str, Any] | None = None) -> None:
         try:
-            from vieneu import Vieneu  # type: ignore
+            import edge_tts
         except ImportError as exc:
-            raise RuntimeError("VieNeu Turbo chưa được cài. Vui lòng chạy scripts/install_tts.ps1 hoặc tắt TTS voiceover.") from exc
-        try:
-            self.tts = Vieneu(mode="turbo", emotion=emotion)
-        except TypeError:
-            self.tts = Vieneu(mode="turbo")
-
-    def encode_reference_to_file(self, reference_audio_path: Path, output_path: Path) -> None:
-        import numpy as np
-
-        embedding = self.tts.encode_reference(str(reference_audio_path))
+            raise RuntimeError("Edge TTS chưa được cài. Vui lòng chạy pip install -r backend/requirements.txt.") from exc
+        voice_id = (voice_data or {}).get("id") or "ja-JP-NanamiNeural"
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        np.save(output_path, embedding)
 
-    def synthesize_to_file(self, text: str, output_path: Path, options: RenderOptions, voice_data: dict[str, Any] | None = None, clone_embedding_path: Path | None = None) -> None:
-        if clone_embedding_path is not None:
-            import numpy as np
+        last_error: Exception | None = None
+        for attempt in range(1, self.MAX_RETRIES + 1):
+            temp_media = output_path.with_suffix(".mp3")
 
-            voice = np.load(clone_embedding_path, allow_pickle=False)
-        else:
-            voice_name = (voice_data or {}).get("vieneu_id")
-            if not voice_name:
-                raise RuntimeError("Không tìm thấy vieneu_id trong voice_data.")
+            async def save_media() -> None:
+                communicate = edge_tts.Communicate(_normalize_tts_text(text) or " ", voice_id)
+                await communicate.save(str(temp_media))
+
             try:
-                voice = self.tts.get_preset_voice(voice_name)
+                _run_async(save_media())
+                if not temp_media.exists() or temp_media.stat().st_size == 0:
+                    raise RuntimeError("Edge TTS tạo file âm thanh rỗng.")
+                _run([settings.ffmpeg_binary, "-y", "-i", str(temp_media), "-ar", "48000", "-ac", "2", str(output_path)])
+                if not output_path.exists() or output_path.stat().st_size == 0:
+                    raise RuntimeError("FFmpeg tạo file WAV rỗng từ âm thanh Edge TTS.")
+                if probe_audio_duration(output_path) <= 0:
+                    raise RuntimeError("File WAV sau Edge TTS có duration <= 0.")
+                return
             except Exception as exc:
-                available = ", ".join(v[1] for v in self.tts.list_preset_voices())
-                raise RuntimeError(
-                    f"VieNeu không tìm thấy preset voice '{voice_name}'. "
-                    f"Các voice có sẵn: {available}"
-                ) from exc
-        audio = self.tts.infer(text=text, voice=voice, temperature=options.tts_temperature, top_k=options.tts_top_k, max_chars=options.tts_max_chars, show_progress=False, apply_watermark=options.tts_apply_watermark)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        self.tts.save(audio, str(output_path))
+                last_error = exc
+                transient = self._is_transient_error(exc)
+                logger.warning(
+                    "Edge TTS attempt %d/%d failed for voice=%s text_len=%d transient=%s: %s",
+                    attempt, self.MAX_RETRIES, voice_id, len(text), transient, exc,
+                )
+                if transient and attempt < self.MAX_RETRIES:
+                    time.sleep(self.RETRY_DELAY_SECONDS * attempt)
+                    continue
+                if attempt >= self.MAX_RETRIES or not transient:
+                    raise RuntimeError(
+                        f"Edge TTS không tạo được audio sau {attempt} lần thử. "
+                        f"Voice={voice_id}, text preview={text[:80]!r}. Lỗi: {last_error}"
+                    ) from last_error
+            finally:
+                temp_media.unlink(missing_ok=True)
 
 
 class TtsVoiceoverService:
@@ -215,7 +315,7 @@ class TtsVoiceoverService:
         if len(text) <= max_chars:
             return [text]
         parts: list[str] = []
-        sentences = re.split(r'(?<=[.!?])\s+', text)
+        sentences = re.split(r'(?<=[.!?。！？])\s+', text)
         current = ""
         for sentence in sentences:
             if len(current) + len(sentence) + 1 <= max_chars:
@@ -224,18 +324,18 @@ class TtsVoiceoverService:
                 if current:
                     parts.append(current)
                 if len(sentence) > max_chars:
-                    words = sentence.split()
+                    words = sentence.split() if " " in sentence else list(sentence)
+                    separator = " " if " " in sentence else ""
                     chunk = ""
                     for word in words:
-                        if len(chunk) + len(word) + 1 <= max_chars:
-                            chunk = (chunk + " " + word).strip()
+                        candidate = (chunk + separator + word).strip()
+                        if len(candidate) <= max_chars:
+                            chunk = candidate
                         else:
-                            parts.append(chunk)
+                            if chunk:
+                                parts.append(chunk)
                             chunk = word
-                    if chunk:
-                        current = chunk
-                    else:
-                        current = ""
+                    current = chunk
                 else:
                     current = sentence
         if current:
@@ -243,79 +343,117 @@ class TtsVoiceoverService:
         return parts or [text]
 
     def generate_natural_tts(self, payload: GeminiPayloadSchema, output_dir: Path, workspace_dir: Path, options: RenderOptions, progress_callback=None, cancel_callback=None) -> tuple[dict[int, float], list[tuple[Path, float, int | None]]]:
-        """Generate TTS per cue, apply silence removal only, probe natural duration.
-        Returns: {cue_index: natural_duration_seconds}, [(fitted_path, start_seconds, segment_id), ...]"""
-        if options.tts_engine != "vieneu_turbo":
-            raise RuntimeError(f"TTS engine chưa hỗ trợ: {options.tts_engine}")
+        if options.tts_engine != "edge_tts":
+            raise RuntimeError("Edge TTS là engine TTS duy nhất được hỗ trợ.")
+        if options.tts_voice_mode != "preset":
+            raise RuntimeError("Edge TTS không hỗ trợ clone voice.")
         tts_dir = workspace_dir / "tts"
         raw_dir = tts_dir / "raw"
         fitted_dir = tts_dir / "fitted"
         raw_dir.mkdir(parents=True, exist_ok=True)
         fitted_dir.mkdir(parents=True, exist_ok=True)
         if progress_callback:
-            progress_callback({"step": "Generate TTS", "message": "Đang load VieNeu Turbo và tạo voiceover theo SRT...", "progress": 90, "phase": "tts_generate", "phase_progress": 0.0})
-        synth = VieneuTurboSynthesizer(options.tts_emotion)
-        voice_data = resolve_vieneu_voice(options)
-        clone_embedding: Path | None = None
-        if options.tts_voice_mode == "clone":
-            if not options.tts_clone_voice_id:
-                raise RuntimeError("Bạn chưa chọn cloned voice.")
-            clone_embedding = clone_voice_embedding_path(options.tts_clone_voice_id)
-            if not clone_embedding.exists():
-                raise RuntimeError("Không tìm thấy embedding của cloned voice.")
+            progress_callback({"step": "Generate TTS", "message": "Đang tạo voiceover bằng Edge TTS...", "progress": 90, "phase": "tts_generate", "phase_progress": 0.0})
+        synth = EdgeTtsSynthesizer()
+        voice_data = resolve_edge_tts_voice(options, payload)
+        fallback_voice_data = alternate_edge_tts_voice(voice_data)
         cue_to_segment = self._cue_segment_map(payload)
         natural_durations: dict[int, float] = {}
         natural_paths: list[tuple[Path, float, int | None]] = []
-        total = max(1, len(payload.srt))
-        for pos, cue in enumerate(payload.srt, start=1):
-            if cancel_callback:
-                cancel_callback()
+        total = len(payload.srt)
+
+        def _process_cue(cue: object) -> tuple[int, float, tuple[Path, float, int | None]]:
             start = srt_timestamp_to_seconds(cue.start)
+            end = srt_timestamp_to_seconds(cue.end)
             segment_id = cue_to_segment.get(cue.index)
-            raw_text = normalize_text_for_vietnamese_tts(cue.text)
+            raw_text = _normalize_tts_text(cue.tts_text or cue.text)
             sub_texts = self._split_long_cue(raw_text, options.tts_max_chars)
             raw_paths: list[Path] = []
-            total_generated_duration = 0.0
             for sub_idx, sub_text in enumerate(sub_texts):
                 sub_raw_path = raw_dir / f"cue_{cue.index:04d}_sub_{sub_idx:02d}.wav"
-                synth.synthesize_to_file(sub_text, sub_raw_path, options, voice_data, clone_embedding)
+                try:
+                    synth.synthesize_to_file(sub_text, sub_raw_path, options, voice_data)
+                except RuntimeError as exc:
+                    logger.warning("Primary TTS voice failed for cue=%s sub=%s voice=%s: %s", cue.index, sub_idx, voice_data.get("id"), exc)
+                    split_retry = self._split_long_cue(sub_text, max(80, min(140, options.tts_max_chars // 2)))
+                    if len(split_retry) > 1:
+                        retry_paths: list[Path] = []
+                        for retry_idx, retry_text in enumerate(split_retry):
+                            retry_path = raw_dir / f"cue_{cue.index:04d}_sub_{sub_idx:02d}_retry_{retry_idx:02d}.wav"
+                            try:
+                                synth.synthesize_to_file(retry_text, retry_path, options, voice_data)
+                            except RuntimeError:
+                                if fallback_voice_data is None:
+                                    raise
+                                synth.synthesize_to_file(retry_text, retry_path, options, fallback_voice_data)
+                            retry_paths.append(retry_path)
+                        concat_retry = fitted_dir / f"concat_retry_{cue.index:04d}_{sub_idx:02d}.txt"
+                        with open(concat_retry, "w", encoding="utf-8") as f:
+                            for p in retry_paths:
+                                f.write(f"file '{p}'\n")
+                        _run([settings.ffmpeg_binary, "-y", "-f", "concat", "-safe", "0", "-i", str(concat_retry), "-c", "copy", str(sub_raw_path)])
+                    elif fallback_voice_data is not None:
+                        synth.synthesize_to_file(sub_text, sub_raw_path, options, fallback_voice_data)
+                    else:
+                        raise
                 sub_duration = probe_audio_duration(sub_raw_path)
-                total_generated_duration += sub_duration
+                if sub_duration > MAX_RAW_CUE_DURATION:
+                    truncated_path = raw_dir / f"cue_{cue.index:04d}_sub_{sub_idx:02d}_truncated.wav"
+                    _run([settings.ffmpeg_binary, "-y", "-i", str(sub_raw_path), "-t", f"{MAX_RAW_CUE_DURATION:.3f}", "-ar", "48000", "-ac", "2", str(truncated_path)])
+                    sub_raw_path = truncated_path
                 raw_paths.append(sub_raw_path)
             raw_path = raw_dir / f"cue_{cue.index:04d}.wav"
             if len(raw_paths) == 1:
                 if raw_paths[0] != raw_path:
-                    raw_paths[0].rename(raw_path)
-                else:
-                    raw_path = raw_paths[0]
+                    raw_paths[0].replace(raw_path)
             else:
                 concat_list = fitted_dir / f"concat_{cue.index:04d}.txt"
                 with open(concat_list, "w", encoding="utf-8") as f:
                     for p in raw_paths:
                         f.write(f"file '{p}'\n")
                 _run([settings.ffmpeg_binary, "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list), "-c", "copy", str(raw_path)])
-            # Apply silence removal only — NO speed, NO atrim
             natural_path = fitted_dir / f"cue_{cue.index:04d}.wav"
-            silence_filter = "silenceremove=start_periods=1:start_duration=0.05:start_threshold=-50dB,areverse,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-50dB,areverse,asetpts=PTS-STARTPTS"
+            silence_filter = "areverse,silenceremove=start_periods=1:start_duration=0.05:start_threshold=-50dB,areverse,asetpts=PTS-STARTPTS"
             _run([settings.ffmpeg_binary, "-y", "-i", str(raw_path), "-af", silence_filter, "-ar", "48000", "-ac", "2", str(natural_path)])
             natural_duration = probe_audio_duration(natural_path)
-            natural_durations[cue.index] = natural_duration
-            natural_paths.append((natural_path, start, segment_id))
-            if progress_callback:
-                progress_callback({"step": "Generate TTS", "message": f"Đang tạo TTS {pos}/{total}...", "progress": 90 + int((pos / total) * 3), "phase": "tts_generate", "phase_progress": pos / total})
+            return cue.index, natural_duration, (natural_path, start, segment_id)
+
+        cues = list(payload.srt)
+        max_workers = min(4, len(cues))
+
+        if max_workers <= 1:
+            for pos, cue in enumerate(cues, start=1):
+                if cancel_callback:
+                    cancel_callback()
+                idx, dur, info = _process_cue(cue)
+                natural_durations[idx] = dur
+                natural_paths.append(info)
+                if progress_callback:
+                    progress_callback({"step": "Generate TTS", "message": f"Đang tạo Edge TTS {pos}/{total}...", "progress": 90 + int((pos / total) * 3), "phase": "tts_generate", "phase_progress": pos / total})
+        else:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {executor.submit(_process_cue, cue): cue for cue in cues}
+                for pos, future in enumerate(as_completed(futures), start=1):
+                    if cancel_callback:
+                        cancel_callback()
+                    idx, dur, info = future.result()
+                    natural_durations[idx] = dur
+                    natural_paths.append(info)
+                    if progress_callback:
+                        progress_callback({"step": "Generate TTS", "message": f"Đang tạo Edge TTS {pos}/{total}...", "progress": 90 + int((pos / total) * 3), "phase": "tts_generate", "phase_progress": pos / total})
+
         natural_paths.sort(key=lambda x: x[1])
         return natural_durations, natural_paths
 
     def generate_voiceover(self, payload: GeminiPayloadSchema, output_dir: Path, workspace_dir: Path, options: RenderOptions, video_duration: float, progress_callback=None, cancel_callback=None, segment_speeds: dict[int | None, float] | None = None) -> dict[str, Any]:
-        if options.tts_engine != "vieneu_turbo":
-            raise RuntimeError(f"TTS engine chưa hỗ trợ: {options.tts_engine}")
+        if options.tts_engine != "edge_tts":
+            raise RuntimeError("Edge TTS là engine TTS duy nhất được hỗ trợ.")
         tts_dir = workspace_dir / "tts"
         fitted_dir = tts_dir / "fitted"
-        # If natural TTS not yet generated, do it now
         natural_path = fitted_dir / "cue_0001.wav"
         if not natural_path.exists():
             self.generate_natural_tts(payload, output_dir, workspace_dir, options, progress_callback=progress_callback, cancel_callback=cancel_callback)
-        # Re-read fitted paths from disk
         cue_to_segment = self._cue_segment_map(payload)
         items: list[dict[str, Any]] = []
         for cue in payload.srt:
@@ -325,7 +463,6 @@ class TtsVoiceoverService:
             dur = probe_audio_duration(path)
             items.append({"cue": cue, "path": path, "start": start, "segment_id": segment_id, "natural_duration": dur})
         items.sort(key=lambda x: x["start"])
-        # Compute segment speeds if not provided
         if segment_speeds is None:
             required_by_segment: dict[int | None, list[float]] = {}
             for item in items:
@@ -333,15 +470,12 @@ class TtsVoiceoverService:
                 req = max(1.0, item["natural_duration"] / slot) if item["natural_duration"] > 0 else 1.0
                 required_by_segment.setdefault(item["segment_id"], []).append(req)
             segment_speeds = {seg_id: min(max(_percentile(values, 90), 1.0), options.tts_max_speed) for seg_id, values in required_by_segment.items()}
-        # Overlap detection (same as before)
-        for i in range(len(items) - 1):
-            curr = items[i]
-            next_start = items[i + 1]["start"]
-            curr_slot = max(0.05, srt_timestamp_to_seconds(curr["cue"].end) - srt_timestamp_to_seconds(curr["cue"].start))
-            curr_end = curr["start"] + curr_slot
-            if curr_end - next_start > 0.1:
-                items[i]["overlap_adjusted"] = True
-        # Apply speed to natural audio — build final fitted files
+        for item in items:
+            item_start = item["start"]
+            speed = segment_speeds.get(item["segment_id"], 1.0)
+            final_dur = item["natural_duration"] / speed if speed > 0 else item["natural_duration"]
+            item["adjusted_start"] = item_start
+            item["adjusted_end"] = item_start + final_dur
         plans: list[TtsCuePlan] = []
         fitted_paths: list[tuple[Path, float]] = []
         for item in items:
@@ -352,53 +486,106 @@ class TtsVoiceoverService:
             if speed > 1.0:
                 speed_filter = _atempo_filter(speed)
                 _run([settings.ffmpeg_binary, "-y", "-i", str(item["path"]), "-af", f"{speed_filter},asetpts=PTS-STARTPTS", "-ar", "48000", "-ac", "2", str(final_path)])
-            else:
-                if item["path"] != final_path:
-                    shutil.copy2(str(item["path"]), str(final_path))
+            elif item["path"] != final_path:
+                shutil.copy2(str(item["path"]), str(final_path))
             final_duration = probe_audio_duration(final_path)
             slot = max(0.05, srt_timestamp_to_seconds(item["cue"].end) - srt_timestamp_to_seconds(item["cue"].start))
-            overflow = final_duration > slot
+            overflow = final_duration > slot + max(0.15, slot * 0.03)
             warning = ""
             if overflow:
                 warning = f"TTS_OVERFLOW: cue {item['cue'].index} natural={item['natural_duration']:.2f}s slot={slot:.2f}s final={final_duration:.2f}s speed={speed:.3f}. Video will be extended by SegmentPlanner."
-            plans.append(TtsCuePlan(index=item["cue"].index, segment_id=item["segment_id"], text=item["cue"].text, start_seconds=item["start"], end_seconds=srt_timestamp_to_seconds(item["cue"].end), slot_duration=slot, generated_duration=item["natural_duration"], applied_speed=speed, final_duration=final_duration, status="warning" if warning else "ok", warning=warning))
-            fitted_paths.append((final_path, item["start"]))
+            plan_text = _normalize_tts_text(item["cue"].tts_text or item["cue"].text)
+            plans.append(TtsCuePlan(index=item["cue"].index, segment_id=item["segment_id"], text=plan_text, start_seconds=item["adjusted_start"], end_seconds=item["adjusted_end"], slot_duration=slot, generated_duration=item["natural_duration"], applied_speed=speed, final_duration=final_duration, status="warning" if warning else "ok", warning=warning))
+            fitted_paths.append((final_path, item["adjusted_start"]))
         voiceover_path = output_dir / "voiceover.wav"
+        self._validate_no_voiceover_overlap(plans)
         self._build_voiceover_track(fitted_paths, voiceover_path, video_duration)
+        voice_data = resolve_edge_tts_voice(options, payload)
         plan_path = output_dir / "tts_plan.json"
         warnings_list = [plan.warning for plan in plans if plan.warning]
+
+        # ── Timing quality diagnostics ──
+        sorted_plans = sorted(plans, key=lambda p: p.start_seconds)
+        big_gap_count = 0
+        total_big_gap_seconds = 0.0
+        max_gap_seconds = 0.0
+        overlap_count = 0
+        max_overlap_seconds = 0.0
+        last_end = 0.0
+        prev_end = sorted_plans[0].end_seconds if sorted_plans else 0.0
+        for plan in sorted_plans:
+            overlap_diag = prev_end - plan.start_seconds
+            if overlap_diag > 0:
+                overlap_count += 1
+                max_overlap_seconds = max(max_overlap_seconds, overlap_diag)
+            gap = plan.start_seconds - prev_end
+            if gap > 3.0:
+                big_gap_count += 1
+                total_big_gap_seconds += gap
+                max_gap_seconds = max(max_gap_seconds, gap)
+            prev_end = max(prev_end, plan.end_seconds)
+            last_end = max(last_end, plan.end_seconds)
+
         plan_payload = {
             "engine": options.tts_engine,
-            "language": options.tts_language,
-            "persona": options.tts_persona,
-            "voice_mode": options.tts_voice_mode,
-            "clone_voice": None,
-            "voice": {},
-            "selected_vieneu_voice": "",
+            "voice_mode": "preset",
+            "voice": {key: value for key, value in voice_data.items() if key != "rank"},
             "requested_gender": options.tts_voice_gender,
-            "emotion": options.tts_emotion,
             "fit_policy": options.tts_fit_policy,
             "max_speed": options.tts_max_speed,
-            "temperature": options.tts_temperature,
-            "top_k": options.tts_top_k,
             "max_chars": options.tts_max_chars,
-            "apply_watermark": options.tts_apply_watermark,
             "segment_speeds": {str(key): value for key, value in segment_speeds.items()},
             "warnings": warnings_list,
             "cues": [plan.__dict__ for plan in plans],
             "voiceover_path": str(voiceover_path),
+            "timing_quality": {
+                "big_gap_count": big_gap_count,
+                "total_big_gap_seconds": round(total_big_gap_seconds, 2),
+                "max_gap_seconds": round(max_gap_seconds, 2),
+                "overlap_count": overlap_count,
+                "max_overlap_seconds": round(max_overlap_seconds, 2),
+                "last_cue_end_seconds": round(last_end, 2),
+            },
         }
         plan_path.write_text(json.dumps(plan_payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return {"voiceover_path": str(voiceover_path), "tts_plan_path": str(plan_path), "tts_warning_count": str(len(warnings_list))}
 
-    def mix_voiceover(self, video_path: Path, voiceover_path: Path, output_path: Path, options: RenderOptions) -> Path:
+    def mix_voiceover(self, video_path: Path, voiceover_path: Path, output_path: Path, options: RenderOptions, encoder_profile: Any = None) -> Path:
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        video_duration = probe_media_duration(video_path)
+        voiceover_duration = probe_audio_duration(voiceover_path)
+        pad_seconds = max(0.0, voiceover_duration - video_duration)
         if options.original_audio_mode == "mute" or not video_has_audio(video_path):
             filter_complex = f"[1:a]volume={options.voiceover_volume:.3f}[a]"
         else:
             filter_complex = f"[0:a]volume={options.original_audio_volume:.3f}[orig];[1:a]volume={options.voiceover_volume:.3f}[vo];[orig][vo]amix=inputs=2:duration=first:normalize=0[a]"
-        _run([settings.ffmpeg_binary, "-y", "-i", str(video_path), "-i", str(voiceover_path), "-filter_complex", filter_complex, "-map", "0:v:0", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-movflags", "+faststart", str(output_path)])
+        cmd = [settings.ffmpeg_binary, "-y", "-i", str(video_path), "-i", str(voiceover_path), "-filter_complex", filter_complex, "-map", "0:v:0", "-map", "[a]"]
+        if pad_seconds > 0.05:
+            from app.services.video_tools import select_video_encoder, video_encoder_args, quality_for_stability
+            profile = encoder_profile or select_video_encoder(options.video_encoder)
+            quality = quality_for_stability(options)
+            cmd.extend(["-vf", f"tpad=stop_mode=clone:stop_duration={pad_seconds:.3f}", *video_encoder_args(profile, quality)])
+        else:
+            cmd.extend(["-c:v", "copy"])
+        cmd.extend(["-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2", "-movflags", "+faststart", str(output_path)])
+        _run(cmd)
         return output_path
+
+    @staticmethod
+    def _validate_no_voiceover_overlap(plans: list[TtsCuePlan]) -> None:
+        sorted_plans = sorted(plans, key=lambda p: p.start_seconds)
+        prev_end = 0.0
+        prev_index: int | None = None
+        for plan in sorted_plans:
+            if plan.start_seconds < prev_end - 0.001:
+                overlap = prev_end - plan.start_seconds
+                if overlap > TTS_OVERLAP_HARD_FAIL_SECONDS:
+                    raise RuntimeError(
+                        f"TTS_TIMING_OVERLAP: cue {prev_index} overlaps cue {plan.index} "
+                        f"by {overlap:.2f}s. Refusing to mix overlapping voiceover."
+                    )
+            prev_end = max(prev_end, plan.end_seconds)
+            prev_index = plan.index
 
     def _build_voiceover_track(self, fitted_paths: list[tuple[Path, float]], output_path: Path, video_duration: float) -> None:
         duration = max(0.1, video_duration)
@@ -426,45 +613,35 @@ class TtsVoiceoverService:
         return mapping
 
 
-def vieneu_tts_status() -> dict[str, str]:
+def edge_tts_status() -> dict[str, str]:
     try:
-        import vieneu  # type: ignore  # noqa: F401
-        return {"status": "ready", "engine": "vieneu_turbo", "message": "VieNeu Turbo đã sẵn sàng."}
+        import edge_tts  # type: ignore  # noqa: F401
+        return {"status": "ready", "engine": "edge_tts", "message": "Edge TTS đã sẵn sàng."}
     except ImportError:
-        return {"status": "not_installed", "engine": "vieneu_turbo", "message": "VieNeu Turbo chưa được cài. Chạy scripts/install_tts.ps1 để bật TTS."}
+        return {"status": "not_installed", "engine": "edge_tts", "message": "Edge TTS chưa được cài. Chạy pip install -r backend/requirements.txt để bật TTS."}
+
+
+def tts_clones_dir() -> Path:
+    return settings.temp_dir / "tts_voices"
+
+
+def list_cloned_voices() -> list[dict[str, Any]]:
+    return []
 
 
 def create_clone_voice(name: str, source_audio_path: Path, options: RenderOptions | None = None) -> dict[str, Any]:
-    clone_id = uuid.uuid4().hex
-    clone_dir = tts_clones_dir() / clone_id
-    clone_dir.mkdir(parents=True, exist_ok=True)
-    reference_path = clone_dir / "reference.wav"
-    _run([settings.ffmpeg_binary, "-y", "-i", str(source_audio_path), "-t", "60", "-ar", "24000", "-ac", "1", str(reference_path)])
-    duration = probe_audio_duration(reference_path)
-    synth = VieneuTurboSynthesizer((options or RenderOptions()).tts_emotion)
-    synth.encode_reference_to_file(reference_path, clone_dir / "voice.npy")
-    metadata = {"id": clone_id, "name": name.strip() or "Cloned voice", "reference_audio_path": str(reference_path), "created_at": time.time(), "duration_seconds": f"{duration:.3f}"}
-    (clone_dir / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
-    return metadata
+    raise RuntimeError("Edge TTS không hỗ trợ clone voice.")
 
 
 def preview_builtin_voice(voice_id: str, text: str, options: RenderOptions) -> Path:
-    voice_data = next((v for v in VIENEU_TURBO_VOICES if v["id"] == voice_id), None)
+    voice_data = next((v for v in EDGE_TTS_VOICES if v["id"] == voice_id), None)
     if not voice_data:
-        raise ValueError(f"Built-in voice '{voice_id}' không tồn tại.")
-    preview_dir = settings.temp_dir / "tts_voice_previews"
-    preview_dir.mkdir(parents=True, exist_ok=True)
-    output_path = preview_dir / f"preview_{voice_id}.wav"
-    synth = VieneuTurboSynthesizer(options.tts_emotion)
-    synth.synthesize_to_file(text.strip() or "Xin chào, đây là giọng đọc thử từ VieNeu Turbo.", output_path, options, voice_data)
+        raise ValueError(f"Edge TTS voice '{voice_id}' không tồn tại.")
+    TTS_PREVIEWS_DIR.mkdir(parents=True, exist_ok=True)
+    output_path = TTS_PREVIEWS_DIR / f"preview_{voice_id}.wav"
+    EdgeTtsSynthesizer().synthesize_to_file(_normalize_tts_text(text) or "Xin chào, đây là giọng đọc thử từ Edge TTS.", output_path, options, voice_data)
     return output_path
 
 
 def preview_clone_voice(clone_id: str, text: str, options: RenderOptions) -> Path:
-    clone_dir = tts_clones_dir() / clone_id
-    if not clone_dir.exists():
-        raise FileNotFoundError("Clone voice không tồn tại.")
-    output_path = clone_dir / "preview.wav"
-    synth = VieneuTurboSynthesizer(options.tts_emotion)
-    synth.synthesize_to_file(text.strip() or "Xin chào, đây là bản thử giọng clone bằng VieNeu Turbo.", output_path, options, clone_embedding_path=clone_voice_embedding_path(clone_id))
-    return output_path
+    raise RuntimeError("Edge TTS không hỗ trợ clone voice.")

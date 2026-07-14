@@ -53,8 +53,12 @@ class FakeAutomationService:
         self.fail_urls = fail_urls or set()
         self.started_urls: list[str] = []
         self.cancelled: list[str] = []
+        self.last_render_payload: dict | None = None
 
-    def start(self, task_id: str, prompt_text: str, render_payload: dict, user_data_dir: str | None = None):
+    def start(self, task_id: str, prompt_text: str, render_payload: dict, user_data_dir: str | None = None,
+              headless: bool | None = None, thinking_mode: str = "extended",
+              analysis_mode: str = "deep_analysis", form_data: dict | None = None):
+        self.last_render_payload = render_payload
         url = render_payload["youtube_url"]
         self.started_urls.append(url)
         if url in self.fail_urls:
@@ -168,14 +172,30 @@ def test_single_auto_submit_route_remains_registered():
     assert "/gemini/batch-auto-submit" in paths
 
 
+class FakeSession:
+    class FakeDB:
+        def close(self):
+            pass
+    def __enter__(self):
+        return self.FakeDB()
+    def __exit__(self, *args):
+        pass
+
+
 def test_single_auto_submit_function_uses_existing_service(monkeypatch):
     calls: list[dict] = []
 
+    monkeypatch.setattr("app.core.database.SessionLocal", FakeSession)
+    monkeypatch.setattr(routes, "_get_youtube_duration_seconds", lambda url, **kwargs: 600)
+    monkeypatch.setattr(routes, "_effective_cookies_file", lambda value, db: "resolved_cookies.txt")
     monkeypatch.setattr(routes.PromptGenerator, "generate", lambda self, data: "prompt")
     monkeypatch.setattr(routes.batch_service, "start", lambda **kwargs: calls.append({"batch": kwargs}))
 
-    def fake_start(task_id: str, prompt_text: str, render_payload: dict, user_data_dir: str | None = None):
-        calls.append({"single": {"task_id": task_id, "prompt_text": prompt_text, "render_payload": render_payload}})
+    def fake_start(task_id: str, prompt_text: str, render_payload: dict, user_data_dir: str | None = None,
+                    headless: bool | None = None, thinking_mode: str = "extended",
+                    analysis_mode: str = "deep_analysis", form_data: dict | None = None,
+                    dry_run: bool = False):
+        calls.append({"single": {"task_id": task_id, "prompt_text": prompt_text, "render_payload": render_payload, "dry_run": dry_run}})
         return None
 
     monkeypatch.setattr(routes.gemini_service, "start", fake_start)
@@ -185,3 +205,157 @@ def test_single_auto_submit_function_uses_existing_service(monkeypatch):
 
     assert len(calls) == 1
     assert "single" in calls[0]
+    assert calls[0]["single"]["dry_run"] is False
+    assert calls[0]["single"]["render_payload"]["ytdlp_cookies_file"] == "resolved_cookies.txt"
+
+
+def test_batch_item_render_status_populated(monkeypatch):
+    monkeypatch.setattr("app.services.batch_pipeline.PromptGenerator.generate", lambda self, data: "prompt")
+    automation = FakeAutomationService()
+    service = BatchPipelineService(
+        automation,
+        lambda job_id: {"status": "done", "progress": 100, "message": "Done", "result": {"final_video_path": "job-1"}},
+        no_sleep,
+    )
+
+    async def run():
+        batch = service.start(form_data=FORM_DATA, render_options={}, subtitle_mode="burn")
+        await service._tasks[batch.batch_id]
+        return batch
+
+    batch = asyncio.run(run())
+
+    assert batch.items[0].render_status is not None
+    assert batch.items[0].render_status.get("status") == "done"
+    assert batch.items[0].render_status.get("progress") == 100
+
+
+def test_batch_item_render_status_progressive_updates(monkeypatch):
+    monkeypatch.setattr("app.services.batch_pipeline.PromptGenerator.generate", lambda self, data: "prompt")
+    automation = FakeAutomationService()
+    calls: list[int] = []
+
+    def render_status(job_id: str) -> dict:
+        n = len(calls)
+        calls.append(n)
+        if n < 3:
+            return {"status": "running", "progress": n * 30, "step": "step", "message": f"Step {n}"}
+        return {"status": "done", "progress": 100, "message": "Done", "result": {"final_video_path": "job-1"}}
+
+    async def fake_sleep(seconds: float) -> None:
+        pass
+
+    service = BatchPipelineService(automation, render_status, fake_sleep)
+
+    async def run():
+        batch = service.start(form_data=FORM_DATA, render_options={}, subtitle_mode="burn")
+        await service._tasks[batch.batch_id]
+        return batch
+
+    batch = asyncio.run(run())
+
+    assert len(calls) >= 4
+    assert batch.items[0].render_status is not None
+    assert batch.items[0].render_status.get("status") == "done"
+
+
+def test_batch_propagates_ytdlp_cookies_from_browser(monkeypatch):
+    monkeypatch.setattr("app.services.batch_pipeline.PromptGenerator.generate", lambda self, data: "prompt")
+    automation = FakeAutomationService()
+    service = BatchPipelineService(automation, lambda job_id: {"status": "done", "result": {"final_video_path": job_id}}, no_sleep)
+
+    async def run():
+        batch = service.start(
+            form_data=FORM_DATA,
+            render_options={},
+            subtitle_mode="burn",
+            ytdlp_cookies_from_browser="chrome",
+        )
+        await service._tasks[batch.batch_id]
+        return batch
+
+    batch = asyncio.run(run())
+    assert automation.last_render_payload is not None
+    assert automation.last_render_payload.get("ytdlp_cookies_from_browser") == "chrome"
+
+
+def test_single_auto_submit_passes_auth_to_duration(monkeypatch):
+    captured: dict = {}
+
+    def capture_duration(url, **kwargs):
+        captured.update(kwargs)
+        return 600
+    monkeypatch.setattr("app.core.database.SessionLocal", FakeSession)
+    monkeypatch.setattr(routes, "_effective_cookies_file", lambda value, db: "resolved.txt")
+    monkeypatch.setattr(routes, "_get_youtube_duration_seconds", capture_duration)
+    monkeypatch.setattr(routes.PromptGenerator, "generate", lambda self, data: "prompt")
+    monkeypatch.setattr(routes.gemini_service, "start", lambda *a, **kw: None)
+
+    payload = GeminiAutoSubmitRequest(
+        form_data={**FORM_DATA, "youtube_urls": [FORM_DATA["youtube_url"]], "source_mode": "single"},
+        render_options={},
+        subtitle_mode="burn",
+        user_data_dir="E:/profile",
+        ytdlp_cookies_from_browser="chrome",
+    )
+    asyncio.run(routes.gemini_auto_submit(payload))
+
+    assert captured.get("cookies_file") == "resolved.txt"
+    assert captured.get("cookies_from_browser") == "chrome"
+    assert captured.get("user_data_dir") == "E:/profile"
+
+
+def test_batch_auto_submit_passes_auth_to_duration(monkeypatch):
+    captured: list[dict] = []
+
+    def capture_duration(url, **kwargs):
+        captured.append(kwargs)
+        return 600
+
+    monkeypatch.setattr("app.core.database.SessionLocal", FakeSession)
+    monkeypatch.setattr(routes, "_effective_cookies_file", lambda value, db: "batch_resolved.txt")
+    monkeypatch.setattr(routes, "_get_youtube_duration_seconds", capture_duration)
+    monkeypatch.setattr(routes.PromptGenerator, "generate", lambda self, data: "prompt")
+    monkeypatch.setattr(routes.batch_service, "start", lambda **kwargs: type("Batch", (), {"model_dump": lambda self: {"batch_id": "b1", "total_items": 2, "status": "pending", "items": []}})())
+
+    payload = GeminiAutoSubmitRequest(
+        form_data=FORM_DATA,
+        render_options={},
+        subtitle_mode="burn",
+        user_data_dir="E:/batch_profile",
+        ytdlp_cookies_from_browser="edge",
+    )
+    asyncio.run(routes.gemini_batch_auto_submit(payload))
+
+    assert len(captured) == 2
+    for kwargs in captured:
+        assert kwargs.get("cookies_file") == "batch_resolved.txt"
+        assert kwargs.get("cookies_from_browser") == "edge"
+        assert kwargs.get("user_data_dir") == "E:/batch_profile"
+
+
+def test_parse_cookies_from_browser_helper():
+    assert routes._parse_cookies_from_browser("chrome:C:\\Profile") == ("chrome", "C:\\Profile", None, None)
+    assert routes._parse_cookies_from_browser("chrome") == ("chrome", None, None, None)
+    assert routes._parse_cookies_from_browser(None) is None
+    assert routes._parse_cookies_from_browser("") is None
+    assert routes._parse_cookies_from_browser("  ") is None
+    assert routes._parse_cookies_from_browser("edge:C:\\Edge\\Profile") == ("edge", "C:\\Edge\\Profile", None, None)
+    assert routes._parse_cookies_from_browser("firefox:/home/user/firefox") == ("firefox", "/home/user/firefox", None, None)
+
+
+def test_resolve_duration_auth_falls_back_to_repo_profile(monkeypatch, tmp_path):
+    """When user_data_dir=None and gemini_profile_path missing,
+    _resolve_duration_auth falls back to ROOT_DIR/data/gemini_profile."""
+    repo_root = tmp_path / "repo"
+    repo_profile = repo_root / "data" / "gemini_profile"
+    cookie = repo_profile / "Default" / "Network" / "Cookies"
+    cookie.parent.mkdir(parents=True, exist_ok=True)
+    cookie.write_bytes(b"")
+
+    monkeypatch.setattr(routes, "ROOT_DIR", repo_root)
+    monkeypatch.setattr(routes.settings, "gemini_profile_path", tmp_path / "nonexistent")
+    monkeypatch.setattr(routes.settings, "ytdlp_cookies_from_browser", None)
+
+    _, cookies_from_browser = routes._resolve_duration_auth(None, None, None)
+    assert cookies_from_browser == f"chrome:{repo_profile}"

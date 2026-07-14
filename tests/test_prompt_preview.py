@@ -31,7 +31,7 @@ def _preview(**overrides) -> PromptPreviewRequest:
 def test_preview_contains_text():
     result = PromptPreviewService().preview(_preview())
     assert len(result.preview_text) > 50
-    assert "Bạn là chuyên gia biên tập video" in result.preview_text
+    assert "Bạn là biên kịch remake video" in result.preview_text
 
 
 def test_preview_returns_full_length():

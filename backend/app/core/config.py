@@ -64,6 +64,20 @@ def _default_local_videos_dir() -> Path:
     return _default_temp_dir() / "videos"
 
 
+def _default_gemini_session_path() -> Path:
+    appdata = _packaged_appdata()
+    if appdata:
+        return appdata / "data" / "gemini_session.json"
+    return ROOT_DIR / "data" / "gemini_session.json"
+
+
+def _default_gemini_profile_path() -> Path:
+    appdata = _packaged_appdata()
+    if appdata:
+        return appdata / "data" / "gemini_profile"
+    return ROOT_DIR / "data" / "gemini_profile"
+
+
 def _packaged_binary(relative_path: str) -> str | None:
     if os.environ.get("MRTRIS_AUTO_PACKAGED") != "1":
         return None
@@ -102,16 +116,20 @@ class Settings(BaseSettings):
     ytdlp_remote_components: str | None = None
     ytdlp_prefer_h264: bool = True
     video_encoder: str = "auto"
-    segment_fps: int = 60
+    segment_fps: int = 30
     render_job_ttl_seconds: int = 24 * 60 * 60
-    license_enforcement: bool = False
+    sv_key_api_url: str = ""
+    sv_key_cache_ttl_hours: int = 24
+    sv_key_grace_period_days: int = 2
 
     gemini_url: str = "https://gemini.google.com/app"
-    gemini_session_path: Path = Field(default_factory=lambda: ROOT_DIR / "data" / "gemini_session.json")
+    gemini_session_path: Path = Field(default_factory=_default_gemini_session_path)
+    gemini_profile_path: Path = Field(default_factory=_default_gemini_profile_path)
     gemini_user_data_dir: str | None = None
     playwright_browsers_path: str | None = None
     playwright_headless: bool = True
-    gemini_timeout_seconds: int = 180
+    gemini_timeout_seconds: int = 900
+    gemini_max_video_duration_seconds: int = 2700
     gemini_retry_count: int = 3
 
     model_config = SettingsConfigDict(env_file=str(ROOT_DIR / ".env"), env_file_encoding="utf-8", extra="ignore")

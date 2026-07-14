@@ -9,6 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router
 from app.core.config import settings
+from app.services.video_tools import final_videos_dir
 from app.core.database import Base, engine, SessionLocal, migrate_sqlite_app_settings, migrate_sqlite_presets
 from app.core.logging import setup_logging
 from app.services.preset_service import PresetService
@@ -29,6 +30,7 @@ def _validate_routes() -> None:
 def create_app() -> FastAPI:
     setup_logging()
     settings.outputs_dir.mkdir(parents=True, exist_ok=True)
+    final_videos_dir().mkdir(parents=True, exist_ok=True)
     settings.temp_dir.mkdir(parents=True, exist_ok=True)
     settings.logs_dir.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(bind=engine)
@@ -46,6 +48,13 @@ def create_app() -> FastAPI:
     )
     app.include_router(router, prefix="/api")
     _validate_routes()
+    try:
+        from app.api.routes import start_cleanup_scheduler
+        start_cleanup_scheduler()
+    except RuntimeError:
+        pass
+    except Exception:
+        logger.exception("Failed to start cleanup scheduler")
 
     frontend_dist = settings.frontend_dist_dir
     frontend_index = frontend_dist / "index.html"

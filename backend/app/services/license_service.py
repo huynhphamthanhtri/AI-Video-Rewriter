@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import json
 import platform
@@ -8,18 +7,15 @@ import re
 import socket
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+import httpx
 
 from app.core.config import settings
 
 
-LICENSE_PUBLIC_KEY_B64 = "Nyj3yQapaKHlkZrdoFDmyuSrAWto6DTaR4TWazyYkZI"
-LICENSE_PREFIX = "MRTRIS-V1-"
 DEFAULT_FEATURES = {
     "render": True,
     "youtube_download": True,
@@ -30,6 +26,10 @@ DEFAULT_FEATURES = {
 
 
 class LicenseError(RuntimeError):
+    pass
+
+
+class RemoteLicenseUnavailable(LicenseError):
     pass
 
 
@@ -47,6 +47,7 @@ class LicenseCheck:
     license_id: str | None = None
     features: dict[str, bool] | None = None
     license_key_hint: str | None = None
+    cache_status: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -62,30 +63,28 @@ class LicenseCheck:
             "license_id": self.license_id,
             "features": self.features or DEFAULT_FEATURES,
             "license_key_hint": self.license_key_hint,
+            "cache_status": self.cache_status,
         }
-
-
-def _b64url_decode(value: str) -> bytes:
-    padding = "=" * (-len(value) % 4)
-    return base64.urlsafe_b64decode((value + padding).encode("ascii"))
-
-
-def _b64url_encode(value: bytes) -> str:
-    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
 
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _iso(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def _parse_dt(value: str | None) -> datetime | None:
     if not value:
         return None
-    return datetime.fromisoformat(value.replace("Z", "+00:00"))
-
-
-def _iso(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    cleaned = value.strip()
+    try:
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", cleaned):
+            return datetime.fromisoformat(cleaned).replace(tzinfo=timezone.utc)
+        return datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _machine_guid() -> str:
@@ -123,96 +122,156 @@ def license_key_hint(license_key: str) -> str:
     return f"{license_key[:16]}...{license_key[-8:]}"
 
 
+def _reason_message(reason: str) -> str:
+    messages = {
+        "MISSING_LICENSE_KEY": "Thiếu license key.",
+        "MISSING_HWID": "Thiếu Hardware ID.",
+        "KEY_NOT_FOUND": "License key không tồn tại.",
+        "STATUS_BLOCKED": "License đã bị khóa hoặc không còn hoạt động.",
+        "EXPIRED": "License đã hết hạn.",
+        "DEVICE_LIMIT_REACHED": "License đã đạt giới hạn thiết bị.",
+        "SHEET_READ_FAILED": "Không đọc được dữ liệu license từ server.",
+        "SHEET_UPDATE_FAILED": "Không cập nhật được thiết bị trên server license.",
+        "SHEET_CONFIG_MISSING": "Server license chưa được cấu hình.",
+        "SHEET_AUTH_FAILED": "Server license xác thực Google Sheet thất bại.",
+        "DEVICE_NOT_BOUND": "Thiết bị này chưa được liên kết với license.",
+        "UNKNOWN_ERROR": "Server license trả lỗi không xác định.",
+    }
+    return messages.get(reason, reason or "License không hợp lệ.")
+
+
 class LicenseService:
     def __init__(self, license_path: Path | None = None):
         self.license_path = license_path or (settings.logs_dir.parent / "data" / "license.json")
-        self.public_key = Ed25519PublicKey.from_public_bytes(_b64url_decode(LICENSE_PUBLIC_KEY_B64))
 
     def status(self) -> LicenseCheck:
         hardware_id = get_hardware_id()
-        if not settings.license_enforcement:
-            return LicenseCheck(True, "disabled", "License enforcement đang tắt trong cấu hình dev.", hardware_id, False, plan="dev", features=DEFAULT_FEATURES)
+        if not settings.sv_key_api_url:
+            return LicenseCheck(True, "disabled", "SV_KEY_API_URL chưa cấu hình; license enforcement đang tắt trong dev mode.", hardware_id, False, plan="dev", features=DEFAULT_FEATURES)
+
         record = self._load_record()
         if not record:
             return LicenseCheck(False, "missing", "Chưa kích hoạt license.", hardware_id, True, features={key: False for key in DEFAULT_FEATURES})
+        if str(record.get("hardware_id") or "") != hardware_id:
+            return LicenseCheck(False, "invalid", "License cache không khớp Hardware ID của máy này.", hardware_id, True, license_key_hint=record.get("license_key_hint"), features={key: False for key in DEFAULT_FEATURES})
+        expiry = _parse_dt(record.get("expires_at"))
+        if expiry and _now_utc() > expiry:
+            self.clear()
+            return LicenseCheck(False, "invalid", "License đã hết hạn.", hardware_id, True, license_key_hint=record.get("license_key_hint"), features={key: False for key in DEFAULT_FEATURES})
+
+        if self._cache_age(record) <= timedelta(hours=settings.sv_key_cache_ttl_hours):
+            self._touch_record(record)
+            return self._check_from_record(record, hardware_id, "fresh")
+
+        license_key = str(record.get("license_key") or "")
         try:
-            payload = self.verify_license_key(str(record.get("license_key") or ""), hardware_id)
-            self._update_last_seen(record)
-            return self._check_from_payload(payload, hardware_id, record)
+            data = self._remote_validate(license_key, hardware_id)
+            new_record = self._record_from_remote(license_key, hardware_id, data)
+            self._save_record(new_record)
+            return self._check_from_record(new_record, hardware_id, "fresh")
+        except RemoteLicenseUnavailable as exc:
+            if self._cache_age(record) <= timedelta(days=settings.sv_key_grace_period_days):
+                record["last_seen_at"] = _iso(_now_utc())
+                self._save_record(record)
+                return self._check_from_record(record, hardware_id, "offline", f"Không kết nối được server license; đang dùng cache offline tối đa {settings.sv_key_grace_period_days} ngày. Chi tiết: {exc}")
+            return LicenseCheck(False, "unreachable", f"Không kết nối được server license và cache đã quá hạn {settings.sv_key_grace_period_days} ngày.", hardware_id, True, license_key_hint=record.get("license_key_hint"), features={key: False for key in DEFAULT_FEATURES}, cache_status="stale")
         except LicenseError as exc:
+            self.clear()
             return LicenseCheck(False, "invalid", str(exc), hardware_id, True, license_key_hint=record.get("license_key_hint"), features={key: False for key in DEFAULT_FEATURES})
 
     def activate(self, license_key: str) -> LicenseCheck:
+        if not settings.sv_key_api_url:
+            raise LicenseError("SV_KEY_API_URL chưa được cấu hình.")
+        cleaned = license_key.strip()
+        if not cleaned:
+            raise LicenseError("Thiếu license key.")
         hardware_id = get_hardware_id()
-        payload = self.verify_license_key(license_key, hardware_id)
-        record = {
-            "license_key": license_key.strip(),
-            "license_key_hint": license_key_hint(license_key.strip()),
-            "activated_at": _iso(_now_utc()),
-            "last_seen_at": _iso(_now_utc()),
-        }
-        self.license_path.parent.mkdir(parents=True, exist_ok=True)
-        self.license_path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
-        return self._check_from_payload(payload, hardware_id, record)
+        data = self._remote_validate(cleaned, hardware_id)
+        record = self._record_from_remote(cleaned, hardware_id, data)
+        self._save_record(record)
+        return self._check_from_record(record, hardware_id, "fresh")
+
+    def unbind(self, license_key: str | None = None) -> None:
+        if not settings.sv_key_api_url:
+            raise LicenseError("SV_KEY_API_URL chưa được cấu hình.")
+        record = self._load_record() or {}
+        cleaned = (license_key or str(record.get("license_key") or "")).strip()
+        if not cleaned:
+            raise LicenseError("Không tìm thấy license key để unbind.")
+        hardware_id = get_hardware_id()
+        self._remote_unbind(cleaned, hardware_id)
+        self.clear()
 
     def clear(self) -> None:
         self.license_path.unlink(missing_ok=True)
 
     def require_feature(self, feature: str) -> None:
-        check = self.status()
-        if not settings.license_enforcement:
+        if not settings.sv_key_api_url:
             return
+        check = self.status()
         if not check.licensed:
             raise LicenseError(check.message)
         if not (check.features or {}).get(feature, False):
             raise LicenseError(f"License không cho phép tính năng: {feature}")
 
-    def verify_license_key(self, license_key: str, expected_hwid: str | None = None) -> dict[str, Any]:
-        cleaned = license_key.strip()
-        if not cleaned.startswith(LICENSE_PREFIX):
-            raise LicenseError("License key không đúng định dạng.")
-        body = cleaned[len(LICENSE_PREFIX):]
-        try:
-            payload_b64, signature_b64 = body.split(".", 1)
-        except ValueError as exc:
-            raise LicenseError("License key thiếu chữ ký.") from exc
-        payload_bytes = _b64url_decode(payload_b64)
-        signature = _b64url_decode(signature_b64)
-        try:
-            self.public_key.verify(signature, payload_bytes)
-        except InvalidSignature as exc:
-            raise LicenseError("Chữ ký license không hợp lệ.") from exc
-        payload = json.loads(payload_bytes.decode("utf-8"))
-        if int(payload.get("version") or 0) != 1:
-            raise LicenseError("Version license không được hỗ trợ.")
-        hwid = _normalize_hwid(str(payload.get("hwid") or ""))
-        if expected_hwid and hwid != _normalize_hwid(expected_hwid):
-            raise LicenseError("License không khớp Hardware ID của máy này.")
-        plan = str(payload.get("plan") or "").lower()
-        if plan not in {"trial", "monthly", "lifetime"}:
-            raise LicenseError("Plan license không hợp lệ.")
-        expires_at = _parse_dt(payload.get("expires_at"))
-        if plan != "lifetime" and expires_at is None:
-            raise LicenseError("License có thời hạn nhưng thiếu expires_at.")
-        if expires_at and _now_utc() > expires_at:
-            raise LicenseError("License đã hết hạn.")
-        return payload
+    def _remote_validate(self, license_key: str, hardware_id: str) -> dict[str, Any]:
+        data = self._post_remote("/api/license/validate", {"licenseKey": license_key, "hwid": hardware_id})
+        if not data.get("valid"):
+            raise LicenseError(_reason_message(str(data.get("reason") or "")))
+        license_info = data.get("license")
+        if not isinstance(license_info, dict):
+            raise LicenseError("Server license trả dữ liệu không hợp lệ.")
+        return license_info
 
-    def _check_from_payload(self, payload: dict[str, Any], hardware_id: str, record: dict[str, Any]) -> LicenseCheck:
-        features = {**DEFAULT_FEATURES, **(payload.get("features") or {})}
+    def _remote_unbind(self, license_key: str, hardware_id: str) -> None:
+        data = self._post_remote("/api/license/unbind", {"licenseKey": license_key, "hwid": hardware_id})
+        if not data.get("success"):
+            raise LicenseError(_reason_message(str(data.get("reason") or "")))
+
+    def _post_remote(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        url = f"{settings.sv_key_api_url.rstrip('/')}{path}"
+        try:
+            response = httpx.post(url, json=payload, timeout=10.0)
+        except httpx.HTTPError as exc:
+            raise RemoteLicenseUnavailable(str(exc)) from exc
+        if response.status_code != 200:
+            raise RemoteLicenseUnavailable(f"HTTP {response.status_code}")
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise RemoteLicenseUnavailable("Response không phải JSON") from exc
+        if not isinstance(data, dict):
+            raise RemoteLicenseUnavailable("Response JSON không hợp lệ")
+        return data
+
+    def _record_from_remote(self, license_key: str, hardware_id: str, license_info: dict[str, Any]) -> dict[str, Any]:
+        now = _iso(_now_utc())
+        return {
+            "license_key": license_key,
+            "license_key_hint": license_key_hint(license_key),
+            "hardware_id": hardware_id,
+            "remote_status": str(license_info.get("status") or ""),
+            "expires_at": str(license_info.get("expiresAt") or ""),
+            "bound_devices": int(license_info.get("boundDevices") or 0),
+            "max_devices": int(license_info.get("maxDevices") or 1),
+            "remote_validated_at": license_info.get("validatedAt"),
+            "validated_at": now,
+            "last_seen_at": now,
+        }
+
+    def _check_from_record(self, record: dict[str, Any], hardware_id: str, cache_status: str, message: str | None = None) -> LicenseCheck:
+        status = str(record.get("remote_status") or "ACTIVE").lower()
         return LicenseCheck(
             True,
             "active",
-            "License hợp lệ.",
+            message or "License hợp lệ.",
             hardware_id,
-            settings.license_enforcement,
-            plan=str(payload.get("plan") or ""),
-            expires_at=payload.get("expires_at"),
-            customer_name=payload.get("customer_name"),
-            customer_email=payload.get("customer_email"),
-            license_id=payload.get("license_id"),
-            features=features,
+            True,
+            plan=status,
+            expires_at=record.get("expires_at"),
+            features=DEFAULT_FEATURES,
             license_key_hint=record.get("license_key_hint"),
+            cache_status=cache_status,
         )
 
     def _load_record(self) -> dict[str, Any] | None:
@@ -220,18 +279,14 @@ class LicenseService:
             return None
         return json.loads(self.license_path.read_text(encoding="utf-8"))
 
-    def _update_last_seen(self, record: dict[str, Any]) -> None:
-        now = _now_utc()
-        last_seen = _parse_dt(record.get("last_seen_at"))
-        if last_seen and now < last_seen:
-            raise LicenseError("Phát hiện thời gian hệ thống không hợp lệ.")
-        record["last_seen_at"] = _iso(now)
+    def _save_record(self, record: dict[str, Any]) -> None:
+        self.license_path.parent.mkdir(parents=True, exist_ok=True)
         self.license_path.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def _touch_record(self, record: dict[str, Any]) -> None:
+        record["last_seen_at"] = _iso(_now_utc())
+        self._save_record(record)
 
-def encode_license_payload(payload: dict[str, Any], private_key_bytes: bytes) -> str:
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-
-    payload_bytes = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    signature = Ed25519PrivateKey.from_private_bytes(private_key_bytes).sign(payload_bytes)
-    return f"{LICENSE_PREFIX}{_b64url_encode(payload_bytes)}.{_b64url_encode(signature)}"
+    def _cache_age(self, record: dict[str, Any]) -> timedelta:
+        validated_at = _parse_dt(record.get("validated_at")) or datetime.fromtimestamp(0, timezone.utc)
+        return _now_utc() - validated_at

@@ -1,173 +1,333 @@
-# AGENTS.md — Auto Review Project
+# AGENT GOVERNANCE
 
-## Role Constraints
+## Primary Role
 
-- **RC branch: feature freeze.** No new features, no architecture refactors, no schema changes, no non-defect code cleanup.
-- Fix only bugs that block validation completely.
-- Do NOT introduce UI fields, change schemas, or add new dependencies.
+You are the Builder.
 
-## Standard Commands
+You are NOT the Architect.
 
-### Run uvicorn (không block bash tool)
-Dùng `-WindowStyle Hidden` để chạy nền, **không dùng** `-NoNewWindow` vì output log vô hạn sẽ block bash tool đến timeout:
+You are NOT the Product Owner.
 
-```powershell
-# Kill processes cũ trên port
-Get-NetTCPConnection -LocalPort 8007 -ErrorAction SilentlyContinue |
-  Select-Object -ExpandProperty OwningProcess -Unique |
-  Stop-Process -Force -ErrorAction SilentlyContinue
+You are NOT the Final Reviewer.
 
-# Kill ALL Python processes nếu port vẫn bận (stale .pyc issue)
-Get-Process -Name python -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Your responsibility is implementation, validation, testing, and reporting.
 
-# Clean pycache
-Get-ChildItem -Path "E:\AUTO_REVIEW\backend" -Recurse -Directory -Filter "__pycache__" |
-  Remove-Item -Recurse -Force
+Architecture decisions belong to the user and external review process.
 
-# Start uvicorn hidden
-Start-Process -WindowStyle Hidden -FilePath "E:\AUTO_REVIEW\.venv312\Scripts\python.exe" `
-  -ArgumentList "-m uvicorn app.main:app --port 8007 --host 127.0.0.1" `
-  -WorkingDirectory "E:\AUTO_REVIEW\backend"
-Start-Sleep -Seconds 6
+---
 
-# Verify port listen
-if (-not (Get-NetTCPConnection -LocalPort 8007 -ErrorAction SilentlyContinue)) {
-  throw "uvicorn chua listen port 8007"
-}
+## Default Workflow
 
-# Verify API
-Invoke-RestMethod -Uri "http://127.0.0.1:8007/docs" -Method Get -ErrorAction Stop
-```
+When receiving a task:
 
-### Run tests
-```powershell
-python -m pytest tests/ -q
-```
+### Phase 1 — Scope Review
 
-### Build frontend
-```powershell
-Set-Location "E:\AUTO_REVIEW\frontend"; npm run build
-```
-Không cần copy dist — backend serve trực tiếp từ `frontend/dist/`.
+Read only the files relevant to the task.
 
-### Package Windows installer
-```powershell
-# Stage package (skip tests + frontend if already validated)
-.\packaging\package_windows.ps1 -SkipTests -SkipFrontendBuild -Version "1.0.0-rc1"
+Identify:
 
-# Compile Inno Setup installer
-ISCC.exe "E:\AUTO_REVIEW\packaging\inno\MrTris_AUTO.iss"
-```
+* Root cause
+* Files to modify
+* Risks
 
-### Verify all API routes registered
-```powershell
-# Start backend, then:
-python -c "import json, urllib.request; req=urllib.request.Request('http://127.0.0.1:8007/openapi.json'); spec=json.loads(urllib.request.urlopen(req).read()); print(f'{len(spec[\"paths\"])} routes')"
-```
+Do not redesign architecture.
 
-## API Route Prefix Constraint
+---
 
-Router được mount ở `/api` trong `main.py`:
-```python
-app.include_router(router, prefix="/api")
-```
+### Phase 2 — Implementation
 
-Route decorators trong `routes.py` **không được thêm `/api`** vào path, vì sẽ tạo double prefix `/api/api/...` khiến route không register.
+Implement only the approved plan.
 
-**Đúng:** `@router.post("/prompt/recommend")`
-**Sai:** `@router.post("/api/prompt/recommend")`
+Prefer minimal changes.
 
-## Versioning
+Do not expand scope.
 
-Single source of truth: **`backend/app/core/versions.py`**
+Do not perform unrelated cleanup.
 
-```python
-CURRENT_PRESET_SCHEMA_VERSION: int = 1
-CURRENT_PROMPT_TEMPLATE_VERSION: int = 1
-CURRENT_JSON_OUTPUT_SCHEMA_VERSION: int = 1
-```
+---
 
-## Privacy Constraints (Prompt Telemetry)
+### Phase 3 — Self Review
 
-- **Không lưu `prompt_text`** vào database.
-- Telemetry chỉ lưu `prompt_chars` (số ký tự) + `prompt_hash` (SHA-256 hex digest).
-- `_sanitize_form_data()` strip các field nhạy cảm: `youtube_url`, `youtube_urls`, `ytdlp_cookies_file`.
-- Telemetry failure không break prompt generation (best-effort, catch exception, log warning).
+Review all modified code.
 
-## Files & Paths
+Check:
 
-### Backend core
-- `backend/app/main.py` — FastAPI app factory
-- `backend/app/api/routes.py` — All API routes
-- `backend/app/core/config.py` — Settings
-- `backend/app/core/database.py` — SQLAlchemy engine + migrations
-- `backend/app/core/versions.py` — Version constants
-- `backend/app/schemas/` — Pydantic models (prompt, render, preset)
-- `backend/app/models/` — SQLAlchemy ORM models (preset, prompt_run)
-- `backend/app/services/` — Business logic services
+* Regression risks
+* Edge cases
+* Null handling
+* Async behavior
+* Error handling
 
-### Frontend
-- `frontend/src/App.tsx` — Main app component
-- `frontend/src/api.ts` — API client functions
-- `frontend/src/types.ts` — TypeScript type definitions
-- `frontend/src/components/` — UI components
-- `frontend/dist/` — Built static files (served by backend)
+Fix issues found before reporting completion.
 
-### Packaging
-- `packaging/package_windows.ps1` — Windows packaging script
-- `packaging/inno/MrTris_AUTO.iss` — Inno Setup installer script
-- `packaging/launcher/mrtris_auto_launcher.py` — App launcher (port fallback 8000-8004, DB init, browser auto-open)
+---
 
-## Xử lý lỗi 422 "Field required" từ backend
-1. Clean .pyc cache
-2. Kill ALL Python processes + restart uvicorn
-3. Kiểm tra schema trực tiếp bằng Python
-4. Gọi API test
+### Phase 4 — Validation
 
-## Troubleshooting: Missing route (404/405 on known endpoints)
+Run all applicable validation steps.
 
-Nếu một API route (ví dụ `/api/subtitle/preview-style`) không hoạt động dù code đã định nghĩa:
+At minimum:
 
-1. Kill ALL Python processes:
+* Backend tests
+* Frontend build
+
+Whenever possible:
+
+* Integration tests
+* E2E tests
+
+Do not skip testing.
+
+* After every successful build, restart the backend so the user can test immediately.
+
+---
+
+## Approval Gate
+
+If task is:
+
+### AUDIT
+
+Do not modify code.
+
+Only analyze.
+
+### DESIGN
+
+Do not modify code.
+
+Only propose solutions.
+
+### BUILD
+
+Implement only approved plan.
+
+### REVIEW
+
+Do not modify code.
+
+Only review.
+
+Always respect the requested phase.
+
+---
+
+## Scope Control
+
+Unless explicitly approved:
+
+Do NOT:
+
+* Refactor code
+* Rename files
+* Rename APIs
+* Change route contracts
+* Change database schema
+* Change websocket flow
+* Change business logic outside task scope
+* Change UI outside task scope
+* Introduce new dependencies
+* Reorganize project structure
+
+Choose the smallest safe change.
+
+---
+
+## Architecture Authority
+
+If a plan is already approved:
+
+Implement the approved plan.
+
+Do not redesign.
+
+Do not substitute your own architecture.
+
+If you identify risks:
+
+Document them in the report.
+
+Do not change direction without approval.
+
+---
+
+## Context Usage
+
+Read only the files required for the current task.
+
+Avoid re-auditing the entire repository unless explicitly requested.
+
+Prefer targeted analysis.
+
+---
+
+## Testing Policy
+
+Before reporting completion:
+
+Required:
+
+* Relevant unit tests
+* Relevant integration tests
+* Frontend build verification
+
+Preferred:
+
+* E2E validation
+
+If a test cannot be executed:
+
+State clearly why.
+
+Do not claim unexecuted tests passed.
+
+---
+
+## Temporary Build Report
+
+Maintain a concise progress report during implementation.
+
+Format:
+
+# BUILD REPORT
+
+## Current Step
+
+...
+
+## Files Modified
+
+...
+
+## Changes
+
+...
+
+## Tests
+
+...
+
+## Risks
+
+...
+
+## Remaining Work
+
+...
+
+---
+
+## Final Report Format
+
+Always finish with:
+
+# FINAL BUILD REPORT
+
+## Task Summary
+
+...
+
+## Root Cause
+
+...
+
+## Files Changed
+
+* ...
+
+## Detailed Changes
+
+...
+
+## Validation
+
+### Backend Tests
+
+PASS / FAIL
+
+### Frontend Build
+
+PASS / FAIL
+
+### Integration Tests
+
+PASS / FAIL / NOT RUN
+
+### E2E Tests
+
+PASS / FAIL / NOT RUN
+
+## Regression Review
+
+...
+
+## Remaining Risks
+
+...
+
+## Commit Status
+
+Ready / Not Ready
+
+---
+
+---
+
+## Run Project Protocol
+
+When the user says "chạy lại dự án để tôi test" or equivalent Vietnamese:
+
+Treat it as approval to clean restart the local dev servers.
+
+0. **Run `scripts/install_tts.ps1`** before anything else. TTS engine (VieNeu Turbo) loads at backend boot; installing after boot requires a restart. Inserting this as step 0 ensures it is never forgotten.
    ```powershell
-   Get-Process -Name python -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+   powershell -ExecutionPolicy Bypass -File E:\AUTO_REVIEW\scripts\install_tts.ps1
    ```
-2. Xoá toàn bộ `__pycache__`:
+
+1. Kill ALL stale server processes by PID from `netstat`. Match ports `8007` (backend) and `5173` (frontend). Use regex extraction (NOT `CommandLine` property — it can be NULL for hidden- window processes, causing the filter to silently skip the target).
    ```powershell
-   Get-ChildItem -Path "E:\AUTO_REVIEW\backend" -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
+   function Kill-ByPort {
+       param($Port)
+       $match = netstat -ano | Select-String ":$Port" | Select-String "LISTENING"
+       if ($match) {
+           $targetPid = $match.ToString() -replace '^.*\s+(\d+)\s*$', '$1'
+           if ($targetPid) { Stop-Process -Id $targetPid -Force }
+       }
+   }
    ```
-3. Restart uvicorn + verify route count:
+2. Wait 3 seconds for ports to fully release. Verify with `netstat -ano | Select-String ":8007" | Select-String "LISTENING"` — assert empty before proceeding.
+3. Start backend detached through `cmd.exe /c`, with log redirection handled by `cmd` (NOT `Start-Process -RedirectStandardOutput/-RedirectStandardError`) to avoid tool handle hangs. Do not use `--reload` unless hot reload is explicitly required:
    ```powershell
-   # Start backend
-   Start-Process -WindowStyle Hidden -FilePath "python.exe" `
-     -ArgumentList "-m uvicorn app.main:app --port 8007 --host 127.0.0.1" `
-     -WorkingDirectory "E:\AUTO_REVIEW\backend"
-   Start-Sleep -Seconds 6
-
-   # Verify route count (expect 45)
-   python -c "import json, urllib.request; req=urllib.request.Request('http://127.0.0.1:8007/openapi.json'); spec=json.loads(urllib.request.urlopen(req).read()); print(f'{len(spec[\"paths\"])} routes')"
+   Start-Process `
+     -FilePath "cmd.exe" `
+     -ArgumentList "/c cd /d E:\AUTO_REVIEW\backend && C:\Users\huynh\AppData\Local\Programs\Python\Python312\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8007 1> E:\AUTO_REVIEW\temp\backend.out.log 2> E:\AUTO_REVIEW\temp\backend.err.log" `
+     -WindowStyle Hidden
    ```
-4. Nếu route count thấp hơn mong đợi, kiểm tra logs ở `backend/logs/error.log`.
+4. Start frontend detached through `cmd.exe /c`, with log redirection handled by `cmd`:
+   ```powershell
+   Start-Process `
+     -FilePath "cmd.exe" `
+     -ArgumentList "/c cd /d E:\AUTO_REVIEW\frontend && npm run dev -- --host 127.0.0.1 1> E:\AUTO_REVIEW\temp\frontend.out.log 2> E:\AUTO_REVIEW\temp\frontend.err.log" `
+     -WindowStyle Hidden
+   ```
+5. Wait 5 seconds in a separate tool call, then probe backend (`http://127.0.0.1:8007/api/gemini/session-status`) and frontend (`http://127.0.0.1:5173`) each within 15-second timeout.
+6. Check TTS status at `http://127.0.0.1:8007/api/tts/status`. If `status != "ready"`, run the install script (should have been done in step 0, but safe fallback):
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File E:\AUTO_REVIEW\scripts\install_tts.ps1
+   ```
+   Then wait 5 seconds and re-check TTS status before proceeding.
+7. Report URLs with PASS/FAIL status.
 
-Nguyên nhân thường gặp: Python load bytecode `.pyc` cũ, khiến module không import được các route mới.
+---
 
-## Kiểm tra schema đã load đúng chưa
-```powershell
-python.exe -c "
-import sys; sys.path.insert(0, 'E:\\AUTO_REVIEW\\backend')
-from app.schemas.render import BlurRegion, BlurKeyframe
-r = BlurRegion(start=0, end=10, keyframes=[BlurKeyframe(time=0, x=0.1, y=0.1, width=0.3, height=0.3, strength=15)], interpolate=False)
-print('Fields:', list(r.model_dump().keys()))
-"
-```
-Kết quả mong đợi: `['start', 'end', 'keyframes', 'interpolate']`
+## Decision Rule
 
-## RC-1 Known Warnings
-1. `PresetRecommendationCard` có prop `videoTitle` chưa được wire trong `App.tsx` — component fallback sang `youtubeUrl` OK.
-2. `README_USER.txt` trong staged package có thể còn version `beta` nếu staging không rebuild với version mới.
+When uncertain:
 
-## Release / Updater Skill
+Choose the safer option.
 
-For publishing new updater releases, follow `docs/RELEASE_SKILL.md`.
+Choose the smaller change.
 
-Do not update `manifest.json` before the matching release zip is uploaded and SHA256 verified.
+Choose the lower-risk implementation.
+
+Avoid scope expansion.

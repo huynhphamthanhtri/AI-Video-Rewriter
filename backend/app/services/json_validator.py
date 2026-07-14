@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.parse
 
 from pydantic import ValidationError
 
@@ -9,7 +10,128 @@ from app.schemas.render import GeminiPayloadSchema, RenderOptions, clip_timestam
 
 
 ACTION_CONNECTORS = {"then", "and", "after", "before", "finally", "next", "but", "while", "rồi", "sau đó", "tiếp theo"}
+MAX_SAFE_VOICEOVER_EXTEND_SECONDS = 5.0
+MAX_AUTO_FIX_SRT_OVERLAP_SECONDS = 0.5
+MAX_AUTO_FIX_SRT_OVERLAP_RATIO = 0.1
 STOPWORDS = {"the", "a", "an", "and", "or", "but", "to", "of", "in", "on", "at", "for", "with", "is", "are", "it", "this", "that", "he", "she", "they", "his", "her", "their", "và", "là", "của", "cho", "trong", "với", "một", "các", "đang"}
+
+TEXT_KEYS_FOR_REPAIR = frozenset({"full_text", "text", "scene_description"})
+
+_SRT_TIMESTAMP_MISSING_HOUR_RE = re.compile(r"^(\d{2}:\d{2},\d{3})$")
+
+
+def loads_json_with_repair(value: str) -> dict:
+    """
+    Parse JSON string with repair pass for Gemini-style unescaped quotes.
+    Attempts strict parse first; if that fails, repairs known text fields
+    and retries.
+    """
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        pass
+
+    repaired = _repair_unescaped_quotes(value)
+    try:
+        return json.loads(repaired)
+    except json.JSONDecodeError:
+        raise ValueError(f"JSON không hợp lệ sau khi repair: không thể parse")
+
+
+def _repair_unescaped_quotes(raw: str) -> str:
+    """
+    Target repair of unescaped double quotes inside known text fields
+    (full_text, text, scene_description) that Gemini often fills with
+    dialogue containing quotation marks.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(raw)
+
+    while i < n:
+        if raw[i] != '"':
+            out.append(raw[i])
+            i += 1
+            continue
+
+        key_end = raw.find('"', i + 1)
+        if key_end == -1 or key_end - i <= 1:
+            out.append(raw[i])
+            i += 1
+            continue
+
+        key = raw[i + 1:key_end]
+
+        if key not in TEXT_KEYS_FOR_REPAIR:
+            out.append(raw[i:key_end + 1])
+            i = key_end + 1
+            continue
+
+        scan = key_end + 1
+        while scan < n and raw[scan] in ' \t\n\r':
+            scan += 1
+        if scan >= n or raw[scan] != ':':
+            out.append(raw[i:key_end + 1])
+            i = key_end + 1
+            continue
+
+        scan += 1
+        while scan < n and raw[scan] in ' \t\n\r':
+            scan += 1
+        if scan >= n or raw[scan] != '"':
+            out.append(raw[i:key_end + 1])
+            i = key_end + 1
+            continue
+
+        out.append(raw[i:scan + 1])
+        i = scan + 1
+
+        while i < n:
+            if raw[i] == '\\':
+                out.append(raw[i:i + 2])
+                i += 2
+            elif raw[i] == '"':
+                if _is_closing_quote(raw, i + 1, n):
+                    out.append('"')
+                    i += 1
+                    break
+                out.append('\\"')
+                i += 1
+            else:
+                out.append(raw[i])
+                i += 1
+
+    return ''.join(out)
+
+
+def _is_closing_quote(raw: str, start: int, n: int) -> bool:
+    """
+    Determine if the quote at position `start - 1` is a JSON structural closing quote.
+    A quote is structural only if followed by `, "` (new key/string), `, }` (trailing comma),
+    `}` or `]` (end of container).
+    A quote immediately followed by `"` (with only whitespace) is always an inner quote
+    because valid JSON requires a comma between sibling key/value pairs.
+    """
+    pos = start
+    while pos < n and raw[pos] in ' \t\n\r':
+        pos += 1
+    if pos >= n:
+        return True
+    ch = raw[pos]
+    if ch in ('}', ']'):
+        return True
+    if ch == '"':
+        # `" "` with only whitespace between cannot be a closing + opening in valid JSON
+        return False
+    if ch == ',':
+        pos += 1
+        while pos < n and raw[pos] in ' \t\n\r':
+            pos += 1
+        if pos >= n:
+            return False
+        if raw[pos] == '"' or raw[pos] in ('}', ']'):
+            return True
+    return False
 
 
 class JsonValidator:
@@ -17,6 +139,9 @@ class JsonValidator:
         try:
             normalized_payload = self.normalize_payload(payload)
             model = GeminiPayloadSchema.model_validate(normalized_payload)
+            timeline_errors = self._validate_srt_timeline(model)
+            if timeline_errors:
+                return False, timeline_errors, None
             return True, [], model
         except ValidationError as exc:
             return False, [self._translate_error(error) for error in exc.errors()], None
@@ -36,7 +161,7 @@ class JsonValidator:
         fixed_payload = self.auto_fix_payload(normalized_payload, render_options=render_options)
         fixed_valid, fixed_errors, fixed_model = self.validate(fixed_payload)
         if fixed_valid:
-            return True, ["AUTO FIX: Đã trim/kéo dài source_end của video_segments để khớp thời lượng subtitle."], fixed_model, fixed_payload
+            return True, ["AUTO FIX: Đã chuẩn hóa timeline/source duration trong payload."], fixed_model, fixed_payload
         return False, errors + fixed_errors, None, None
 
     def alignment_warnings(self, payload: object) -> list[str]:
@@ -62,15 +187,58 @@ class JsonValidator:
                 warnings.append(f"ALIGNMENT WARNING: Segment #{segment.segment_id} subtitle và scene_description ít keyword chung; kiểm tra lại có đúng cảnh không.")
         return warnings
 
+    @staticmethod
+    def _normalize_clip_timestamps(payload: dict) -> None:
+        segments = payload.get("video_segments")
+        if not isinstance(segments, list):
+            return
+        for seg in segments:
+            if not isinstance(seg, dict):
+                continue
+            for key in ("source_start", "source_end"):
+                val = seg.get(key)
+                if isinstance(val, str):
+                    val = val.strip().replace(",", ".")
+                    seg[key] = val
+
+    @staticmethod
+    def _normalize_srt_timestamps(payload: dict) -> None:
+        srt_items = payload.get("srt")
+        if not isinstance(srt_items, list):
+            return
+        for item in srt_items:
+            if not isinstance(item, dict):
+                continue
+            for key in ("start", "end"):
+                val = item.get(key)
+                if isinstance(val, str) and _SRT_TIMESTAMP_MISSING_HOUR_RE.match(val):
+                    item[key] = f"00:{val}"
+
+    @staticmethod
+    def _normalize_metadata_language(payload: dict) -> None:
+        meta = payload.get("metadata")
+        if not isinstance(meta, dict):
+            return
+        lang = meta.get("target_language")
+        if isinstance(lang, str):
+            lang_norm = lang.strip().lower().replace("  ", " ")
+            if lang_norm in ("vi", "vietnamese", "tieng viet"):
+                meta["target_language"] = "Tiếng Việt"
+        market = meta.get("target_market")
+        if isinstance(market, str):
+            market_norm = market.strip().lower().replace("  ", " ")
+            if market_norm in ("vietnam", "viet nam", "vn"):
+                meta["target_market"] = "Việt Nam"
+
     def normalize_payload(self, payload: object) -> dict:
         if isinstance(payload, dict):
             parsed = payload
         elif isinstance(payload, str):
             cleaned = self.strip_markdown_code_fence(payload)
             try:
-                parsed = json.loads(cleaned)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"JSON không hợp lệ: {exc.msg}") from exc
+                parsed = loads_json_with_repair(cleaned)
+            except (json.JSONDecodeError, ValueError) as exc:
+                raise ValueError(f"JSON không hợp lệ: {exc}") from exc
         else:
             raise ValueError("JSON EDL phải là object hoặc chuỗi JSON hợp lệ.")
         if not isinstance(parsed, dict):
@@ -80,7 +248,38 @@ class JsonValidator:
             for source in sources:
                 if isinstance(source, dict) and isinstance(source.get("youtube_url"), str):
                     source["youtube_url"] = self._sanitize_url(source["youtube_url"])
+        self._normalize_clip_timestamps(parsed)
+        self._normalize_srt_timestamps(parsed)
+        self._normalize_metadata_language(parsed)
         return parsed
+
+    @staticmethod
+    def _find_srt_timeline_overlaps(model: GeminiPayloadSchema) -> list[dict[str, object]]:
+        sorted_srt = sorted(model.srt, key=lambda c: c.index)
+        overlaps: list[dict[str, object]] = []
+        for i in range(len(sorted_srt) - 1):
+            current = sorted_srt[i]
+            nxt = sorted_srt[i + 1]
+            current_end = srt_timestamp_to_seconds(current.end)
+            next_start = srt_timestamp_to_seconds(nxt.start)
+            if current_end > next_start:
+                overlaps.append({
+                    "current_index": current.index,
+                    "next_index": nxt.index,
+                    "current_end": current.end,
+                    "next_start": nxt.start,
+                    "overlap_seconds": round(current_end - next_start, 3),
+                })
+        return overlaps
+
+    def _validate_srt_timeline(self, model: GeminiPayloadSchema) -> list[str]:
+        overlaps = self._find_srt_timeline_overlaps(model)
+        return [
+            f"SRT_OVERLAP: srt[{o['current_index']}] ends at {o['current_end']} "
+            f"after srt[{o['next_index']}] starts at {o['next_start']} "
+            f"({o['overlap_seconds']:.2f}s overlap)."
+            for o in overlaps
+        ]
 
     def strip_markdown_code_fence(self, value: str) -> str:
         cleaned = value.strip()
@@ -93,9 +292,11 @@ class JsonValidator:
         fixed_payload = self._deepcopy_payload(payload)
         self._auto_fix_sources(fixed_payload)
         self._auto_fix_duplicates_and_sort(fixed_payload)
+        self._auto_fix_srt_tiny_overlaps(fixed_payload)
         if self._skip_duration_auto_fix(render_options):
             return fixed_payload
-        return self.auto_fix_duration_mismatch(fixed_payload)
+        voiceover_safe_trim_only = self._voiceover_safe_trim_only(render_options)
+        return self.auto_fix_duration_mismatch(fixed_payload, trim_only=voiceover_safe_trim_only)
 
     def _skip_duration_auto_fix(self, render_options: RenderOptions | dict | None) -> bool:
         if render_options is None:
@@ -106,9 +307,20 @@ class JsonValidator:
         else:
             tts_mode = render_options.tts_mode
             tts_fit_policy = render_options.tts_fit_policy
+        return False
+
+    def _voiceover_safe_trim_only(self, render_options: RenderOptions | dict | None) -> bool:
+        if render_options is None:
+            return False
+        if isinstance(render_options, dict):
+            tts_mode = render_options.get("tts_mode")
+            tts_fit_policy = render_options.get("tts_fit_policy", "hybrid")
+        else:
+            tts_mode = render_options.tts_mode
+            tts_fit_policy = render_options.tts_fit_policy
         return tts_mode == "voiceover" and tts_fit_policy != "segment_uniform"
 
-    def auto_fix_duration_mismatch(self, payload: dict) -> dict:
+    def auto_fix_duration_mismatch(self, payload: dict, trim_only: bool = False) -> dict:
         fixed_payload = self._deepcopy_payload(payload)
         srt_items = fixed_payload.get("srt", [])
         segments = fixed_payload.get("video_segments", [])
@@ -128,9 +340,14 @@ class JsonValidator:
             try:
                 subtitle_duration = srt_timestamp_to_seconds(end_item["end"]) - srt_timestamp_to_seconds(start_item["start"])
                 source_start_seconds = clip_timestamp_to_seconds(segment["source_start"])
+                source_end_seconds = clip_timestamp_to_seconds(segment["source_end"])
             except (KeyError, TypeError, ValueError):
                 continue
             if subtitle_duration <= 0:
+                continue
+            source_duration = source_end_seconds - source_start_seconds
+            shortage = subtitle_duration - source_duration
+            if trim_only and source_duration <= subtitle_duration and not (0 < shortage <= MAX_SAFE_VOICEOVER_EXTEND_SECONDS):
                 continue
             segment["source_end"] = seconds_to_clip_timestamp(source_start_seconds + subtitle_duration)
         return fixed_payload
@@ -151,18 +368,9 @@ class JsonValidator:
         srt_items = payload.get("srt")
         if isinstance(srt_items, list):
             srt_items.sort(key=lambda item: item.get("index", 0) if isinstance(item, dict) else 0)
-            seen: set[int] = set()
-            next_index = 1
-            for item in srt_items:
-                if not isinstance(item, dict):
-                    continue
-                current = item.get("index")
-                if not isinstance(current, int) or current in seen:
-                    while next_index in seen:
-                        next_index += 1
-                    item["index"] = next_index
-                    current = next_index
-                seen.add(current)
+            indices = [item.get("index") for item in srt_items if isinstance(item, dict)]
+            if len(indices) != len(set(indices)):
+                pass
         segments = payload.get("video_segments")
         if isinstance(segments, list):
             segments.sort(key=lambda item: item.get("order", 0) if isinstance(item, dict) else 0)
@@ -170,11 +378,49 @@ class JsonValidator:
                 segment["order"] = index
                 segment["segment_id"] = index
 
+    @staticmethod
+    def _auto_fix_srt_tiny_overlaps(payload: dict) -> None:
+        srt_items = payload.get("srt")
+        if not isinstance(srt_items, list) or len(srt_items) < 2:
+            return
+        srt_items.sort(key=lambda item: item.get("index", 0) if isinstance(item, dict) else 0)
+        for i in range(len(srt_items) - 1):
+            current = srt_items[i]
+            nxt = srt_items[i + 1]
+            if not isinstance(current, dict) or not isinstance(nxt, dict):
+                continue
+            try:
+                current_end = srt_timestamp_to_seconds(current["end"])
+                current_start = srt_timestamp_to_seconds(current["start"])
+                next_start = srt_timestamp_to_seconds(nxt["start"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if current_end <= next_start:
+                continue
+            overlap = current_end - next_start
+            dur = current_end - current_start
+            ratio = overlap / max(dur, 0.001)
+            if overlap <= MAX_AUTO_FIX_SRT_OVERLAP_SECONDS and ratio <= MAX_AUTO_FIX_SRT_OVERLAP_RATIO:
+                from app.schemas.render import seconds_to_srt_timestamp
+                current["end"] = seconds_to_srt_timestamp(next_start)
+
     def _sanitize_url(self, value: str) -> str:
         cleaned = value.strip().strip("<>")
         markdown_match = re.fullmatch(r"\[[^\]]+]\(([^)]+)\)", cleaned)
         if markdown_match:
             cleaned = markdown_match.group(1).strip().strip("<>")
+        try:
+            parsed = urllib.parse.urlparse(cleaned)
+            if parsed.netloc in {"google.com", "www.google.com"}:
+                qs = urllib.parse.parse_qs(parsed.query)
+                q = qs.get("q")
+                if q:
+                    inner = urllib.parse.unquote(q[0])
+                    inner_parsed = urllib.parse.urlparse(inner)
+                    if inner_parsed.netloc in {"youtube.com", "www.youtube.com", "youtu.be", "m.youtube.com"}:
+                        return self._sanitize_url(inner)
+        except Exception:
+            pass
         return cleaned
 
     def _keyword_overlap(self, left: str, right: str) -> float:

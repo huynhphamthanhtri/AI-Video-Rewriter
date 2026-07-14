@@ -125,7 +125,7 @@ $body = @{
     render_options = @{
         tts_mode = "voiceover"
         tts_engine = "vieneu_turbo"
-        tts_language = "auto"
+        # tts_language removed (dead code — vendor auto-detects)
         tts_persona = "neutral"
         tts_voice_region = "auto"
         tts_voice_gender = "female"
@@ -270,7 +270,7 @@ $body = @{
     render_options = @{
         tts_mode = "voiceover"
         tts_engine = "vieneu_turbo"
-        tts_language = "auto"
+        # tts_language removed (dead code — vendor auto-detects)
         tts_persona = "neutral"
         tts_voice_region = "auto"
         tts_voice_gender = "female"

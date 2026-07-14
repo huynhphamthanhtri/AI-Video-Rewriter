@@ -15,7 +15,6 @@ class IntentBlock(PromptBlock):
         )
         return (
             f"Cấu hình viết lại:\n"
-            f"- Preset: {data.preset_name or 'Tùy chỉnh thủ công'}\n"
             f"- Phong cách viết lại: {data.rewrite_style}\n"
             f"- Đối tượng khán giả: {data.target_audience}\n"
             f"- Giọng điệu: {data.tone}\n"

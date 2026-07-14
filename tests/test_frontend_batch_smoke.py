@@ -31,3 +31,30 @@ def test_frontend_batch_panel_and_cancel_are_wired():
     assert "<BatchPipelineProgress progress={batchProgress} onCancel={handleCancelBatchPipeline}" in app
     assert "cancelBatch(batchId)" in app
     assert "Hủy batch" in component
+
+
+def test_frontend_deep_analysis_mode_is_wired():
+    app = (ROOT / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
+    types = (ROOT / "frontend" / "src" / "types.ts").read_text(encoding="utf-8")
+
+    assert "GeminiAnalysisMode" in types
+    assert "geminiAnalysisMode" in app
+    assert "Phân tích sâu" in app
+    assert "gemini_analysis_mode" in app
+
+
+def test_frontend_target_languages_are_limited_to_tts_supported_languages():
+    options = (ROOT / "frontend" / "src" / "constants" / "options.ts").read_text(encoding="utf-8")
+
+    for language in ["Tiếng Việt", "English", "German", "Japanese", "Spanish", "Korean"]:
+        assert language in options
+    for language in ["Chinese", "French", "Portuguese", "Hindi", "Thai", "Indonesian"]:
+        assert language not in options
+
+
+def test_frontend_language_change_syncs_tts_voice():
+    app = (ROOT / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
+
+    assert "languageVoiceDefaults" in app
+    assert "syncVoiceForLanguage" in app
+    assert "updateTargetLanguage(e.target.value)" in app

@@ -1,189 +1,155 @@
-# Gemini Login State Report
+# Gemini Login State False-Positive Fix Report
 
-## Phase 1 — Current Flow
+## Root Cause
 
-### API liên quan
+**`_set_live_session_status()` had a downgrade‑protection guard that permanently prevented a cached "verified logged‑in" status from ever being downgraded, even when live detection later found a visible Sign‑In button.**
 
-- `POST /api/gemini/open-browser`: mở Chromium để user đăng nhập Gemini và lưu Playwright `storage_state`.
-- `GET /api/gemini/session-status`: kiểm tra file session đã lưu.
-- `POST /api/gemini/auto-submit`: tạo prompt và chạy auto pipeline qua Gemini.
-- `WS /api/gemini/status/{task_id}`: stream trạng thái auto pipeline.
+---
 
-### Function liên quan
+## Old Detection Logic (Broken)
 
-- `GeminiAutomationService.open_standalone_browser()`
-- `GeminiAutomationService._run_standalone_browser()`
-- `GeminiAutomationService.start()`
-- `GeminiAutomationService._run_pipeline()`
-- `GeminiAutomationService._handle_login_if_needed()`
-- `GeminiAutomationService.get_session_status()`
-
-### Cách check login trước đây
-
-- `get_session_status()` chỉ đọc `settings.gemini_session_path` và kiểm tra cookie auth trong file.
-- Auto pipeline mở Gemini, sau đó `_handle_login_if_needed()` kiểm tra cookie/DOM inline.
-- Standalone browser lưu session bằng vòng lặp mỗi 10 giây.
-
-### Rủi ro trước đây
-
-- Session file tồn tại không đồng nghĩa Gemini session còn sống.
-- Cookie auth có thể stale hoặc hết hạn server-side.
-- Logic check login bị phân tán, khó đảm bảo auto pipeline luôn live-check.
-- User có thể đăng nhập xong rồi đóng standalone browser quá nhanh trước khi vòng lưu 10 giây chạy.
-
-## Phase 2 — Implementation
-
-### Files changed
-
-- `backend/app/services/gemini_automation.py`
-- `tests/test_gemini_login_state.py`
-- `docs/GEMINI_LOGIN_STATE_REPORT.md`
-
-### Helper added
-
-Added internal helper:
+### `_set_live_session_status()` (lines 397–411)
 
 ```python
-async def _detect_gemini_login_state(page, context) -> dict:
-    ...
+if previous_verified and not logged_in:
+    current = dict(self._last_session_status or {})
+    current.update({...browser_state...})
+    self._last_session_status = current
+    return   # ← never downgrades
 ```
 
-Return shape:
+Once the session was marked as `exists=True, live_checked=True` (verified logged‑in), ALL subsequent `logged_in=False` calls were silently discarded. The status remained "Đã đăng nhập" indefinitely until server restart.
 
-```json
-{
-  "logged_in": true,
-  "method": "cookies|chat_area|avatar|signin|unknown",
-  "needs_login": false,
-  "cookie_ok": true,
-  "chat_area_ok": true,
-  "avatar_ok": false,
-  "signin_indicator": false
-}
+This affected two flows:
+1. **User signs out while browser is open** — `_save_loop` detects sign‑in button → `_set_live_session_status(logged_in=False)` → **ignored**.
+2. **User re‑opens browser after session expiry** — initial detection finds sign‑in page → `_set_live_session_status(logged_in=False)` → **ignored** because cache from previous open still says verified.
+
+### `get_session_status()`
+
+Always returned the cached `_last_session_status` without re-checking the session file or running a new detection. The only live‑check happens inside `_run_standalone_browser()` / `_save_loop` — which was neutered by the guard above.
+
+### Detection Logic (`_detect_gemini_login_state`)
+
+```python
+if cookie_ok and (chat_area_ok or avatar_ok):   →  logged_in=True  (method="cookies")
+elif chat_area_ok:                                →  logged_in=True  (method="chat_area")
+elif avatar_ok:                                   →  logged_in=True  (method="avatar")
+elif signin_indicator:                            →  logged_in=False (method="signin")
+else:                                             →  logged_in=False (method="unknown")
 ```
 
-Detection order:
+This logic was already correct — it requires both auth cookies AND a chat/avatar element to consider cookies sufficient, and explicitly treats sign‑in buttons as NOT logged in. The problem was entirely in the caching layer, not the detection.
 
-1. Auth cookies in Playwright context: `SAPISID`, `__Secure-3PSAPISID`, `OSID`
-2. Gemini chat area/textbox with no sign-in indicator
-3. User avatar/profile indicator
-4. Sign-in indicator
-5. Unknown / needs login
+---
 
-### New code path
+## New Detection Logic (Fixed)
 
-Auto pipeline:
+### `_set_live_session_status()` — downgrade protection changed
 
-```text
-_run_pipeline()
-→ page.goto(settings.gemini_url)
-→ _handle_login_if_needed()
-→ _detect_gemini_login_state()
-→ if logged_in: save storage_state immediately, continue
-→ if not logged_in: wait_login, poll live state, save storage_state immediately after login
-→ submit prompt only after live login detection succeeds
+```python
+if previous_verified and not logged_in:
+    if method == "signin":
+        # Allow downgrade — sign‑in page is explicitly visible
+        logger.info("Live check detects sign‑in page — downgrading...")
+    else:
+        # Transient / unknown state — keep previous verified status
+        current = dict(self._last_session_status or {})
+        current.update({...browser_state...})
+        self._last_session_status = current
+        return
 ```
 
-Standalone browser:
+**Key change:** Only protect when `method="unknown"` (transient loading/navigation state). When `method="signin"` (Sign‑In button is visible on page), the status **is** downgraded.
 
-```text
-_run_standalone_browser()
-→ page.goto(settings.gemini_url)
-→ _detect_gemini_login_state()
-→ if logged_in: save storage_state immediately
-→ background loop polls every 2s and saves immediately when login is detected
-```
+### Logging Added
 
-`session-status` endpoint semantics:
+In `_run_standalone_browser()`:
+- Before navigation: logs `session_path` and `session_path.exists()`
+- After `_detect_gemini_login_state()`: logs `logged_in`, `method`, `cookie_ok`, `chat_area_ok`, `avatar_ok`, `signin_indicator`
 
-```json
-{
-  "exists": true,
-  "session_file_exists": true,
-  "has_auth_cookies": true,
-  "live_checked": false,
-  "path": "...",
-  "message": "Session file exists but live Gemini login is verified during auto pipeline."
-}
-```
+In `_set_live_session_status()`:
+- On downgrade: logs `session_path`, `method`, `signin_indicator`
 
-The endpoint remains backward-compatible via `exists`, but does not overclaim live login.
+### Status Field Semantics
 
-## Phase 3 — Validation
+| Scenario | `exists` | `live_checked` | `needs_login` | `browser_open` | UI shows |
+|---|---|---|---|---|---|
+| No session file | false | false | true | false | "Chưa login" |
+| Session file exists (unverified) | false | false | false* | false | "Có session đã lưu" |
+| Browser open, sign‑in detected | false | true | true | true | "Session hết hạn" |
+| Browser open, verified logged‑in | true | true | false | true | "Đã đăng nhập" |
+| After sign‑in detected + browser closed | false | true | true | false | "Session hết hạn" |
+| After verified + browser closed | true | true | false | false | "Đã đăng nhập" |
 
-### Case 1 — Session file exists but live check fails
+*\* `needs_login` is false when `has_auth_cookies=true` but not live‑checked (legacy; UI ignores this field for non‑live cases)*
 
-Expected:
+---
 
-```text
-auto pipeline waits for login
-```
+## Files Changed
 
-Validation:
+| File | Change |
+|---|---|
+| `backend/app/services/gemini_automation.py` | Modified `_set_live_session_status()` to allow downgrade on `method="signin"`; added logging for session path, existence, and detection result. |
+| `tests/test_gemini_login_state.py` | Renamed old transient‑signin test to `test_verified_live_session_is_not_downgraded_by_transient_unknown` with `method="unknown"`; added new `test_verified_live_session_is_downgraded_by_signin_indicator`. |
+| `docs/GEMINI_LOGIN_STATE_REPORT.md` | This report. |
 
-- `_detect_gemini_login_state()` returns `logged_in=false`, `method=signin|unknown`, `needs_login=true` when no live login signal exists.
-- `_handle_login_if_needed()` uses this helper before prompt submission and moves to `wait_login` when not logged in.
-
-### Case 2 — Live check succeeds by chat area
-
-Expected:
-
-```text
-storage_state saved immediately
-pipeline continues
-```
-
-Validation:
-
-- Unit test verifies chat area detection returns `logged_in=true`, `method=chat_area`.
-- `_handle_login_if_needed()` saves `storage_state` immediately for logged-in state.
-
-### Case 3 — Standalone browser login
-
-Expected:
-
-```text
-```
-
-Validation:
-
-- `_run_standalone_browser()` now checks login after `page.goto()` and saves immediately if logged in.
-- Background save loop polls every 2 seconds and saves as soon as login is detected.
-
-### Case 4 — session-status endpoint
-
-Expected:
-
-```text
-```
-
-Validation:
-
-- Unit tests verify `live_checked=false` for both missing and existing session files.
-- Response message explicitly states live Gemini login is verified during auto pipeline.
+---
 
 ## Tests
 
-Command:
+### Targeted Login‑State Tests (25 tests)
 
-```powershell
-python.exe -m pytest tests/test_gemini_login_state.py -q
+```bash
+python -m pytest tests/test_gemini_login_state.py -q
 ```
 
-Result:
+`25 passed in 0.75s`
 
-```text
-7 passed
+### Full Backend Suite (312 tests)
+
+```bash
+python -m pytest tests/ -q
 ```
 
-Full suite command:
+`312 passed in 5.43s`
 
-```powershell
-python.exe -m pytest tests/ -q
+### Frontend Build
+
+```bash
+npm run build
 ```
 
-Result:
+`build success` — no UI changes required.
 
-```text
-283 passed
-```
+---
+
+## Test Coverage Added
+
+| Test | Verifies |
+|---|---|
+| `test_verified_live_session_is_downgraded_by_signin_indicator` | After verified logged‑in, a subsequent `method="signin"` detection correctly downgrades to `exists=False, needs_login=True`. After browser close, `needs_login` stays True. |
+| `test_verified_live_session_is_not_downgraded_by_transient_unknown` | After verified logged‑in, a `method="unknown"` detection (transient) keeps the existing verified status. |
+
+### Existing Relevant Tests
+
+| Test | Verifies |
+|---|---|
+| `test_detect_gemini_login_state_stale_cookie_with_signin_requires_login` | Cookie exists but sign‑in visible → `logged_in=False` |
+| `test_detect_gemini_login_state_signin_requires_login` | Only sign‑in visible → `logged_in=False` |
+| `test_detect_gemini_login_state_by_chat_area` | Chat area visible → `logged_in=True` |
+| `test_detect_gemini_login_state_by_avatar` | Avatar visible (incl. SignOut link) → `logged_in=True` |
+| `test_signout_indicator_is_not_treated_as_signin` | SignOut link treated as avatar (logged‑in), not sign‑in indicator |
+| `test_session_status_without_file_does_not_overclaim_live_login` | No file → `exists=False, live_checked=False` |
+| `test_session_status_with_auth_cookie_does_not_overclaim_live_login` | File exists → `live_checked=False` (conservative) |
+| `test_live_session_status_marks_expired_session_needing_login` | After live check with `logged_in=False` → `needs_login=True` |
+| `test_live_session_status_marks_verified_login` | After live check with `logged_in=True` → `exists=True` |
+
+---
+
+## Remaining Limitations
+
+1. **No live re‑verification when browser is closed.** After the browser closes, `get_session_status()` returns the last known live‑checked state without re‑opening a headless browser. If the session expires while the browser is closed, the cached "Đã đăng nhập" will persist until the user opens the browser again (at which point the fix correctly downgrades).
+
+2. **Transient `method="unknown"` is still protected.** During navigation or page transitions, `_detect_gemini_login_state()` may return `method="unknown"`. This will not downgrade the status, preventing false‑positive "Session hết hạn" glitches.
+
+3. **No cookie expiry check.** The session file's auth cookies are not checked for expiration. If a cookie has an expiry date, the code could detect it without needing a live browser visit. This is a future enhancement beyond the current scope.

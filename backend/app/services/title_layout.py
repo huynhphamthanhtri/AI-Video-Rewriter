@@ -1,11 +1,47 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 from app.schemas.render import RenderOptions
+
+
+_CJK_RANGES = (
+    (0x3040, 0x309F),   # Hiragana
+    (0x30A0, 0x30FF),   # Katakana
+    (0x4E00, 0x9FFF),   # CJK Unified Ideographs
+    (0x3400, 0x4DBF),   # CJK Extension A
+    (0xF900, 0xFAFF),   # CJK Compatibility Ideographs
+    (0xAC00, 0xD7AF),   # Hangul Syllables
+    (0x1100, 0x11FF),   # Hangul Jamo
+    (0x3130, 0x318F),   # Hangul Compatibility Jamo
+)
+
+
+def _contains_cjk(text: str) -> bool:
+    return any(
+        lo <= ord(ch) <= hi
+        for ch in text
+        for lo, hi in _CJK_RANGES
+    )
+
+
+_HANGUL_RANGES = (
+    (0xAC00, 0xD7AF),
+    (0x1100, 0x11FF),
+    (0x3130, 0x318F),
+)
+
+
+def _contains_hangul(text: str) -> bool:
+    return any(
+        lo <= ord(ch) <= hi
+        for ch in text
+        for lo, hi in _HANGUL_RANGES
+    )
 
 
 @dataclass
@@ -53,24 +89,94 @@ _FONT_SIZE_MAP = {
 }
 
 
-def _title_font_path() -> Path | None:
-    for candidate in [Path("C:/Windows/Fonts/segoeui.ttf"), Path("C:/Windows/Fonts/arial.ttf")]:
+def _title_font_path(text: str = "") -> Path | None:
+    candidates: list[Path]
+    if _contains_hangul(text):
+        candidates = [
+            Path("C:/Windows/Fonts/malgun.ttf"),
+            Path("C:/Windows/Fonts/malgunbd.ttf"),
+            Path("C:/Windows/Fonts/malgunsl.ttf"),
+            Path("C:/Windows/Fonts/NotoSansKR-Regular.otf"),
+            Path("C:/Windows/Fonts/NotoSansKR-Bold.otf"),
+            Path("C:/Windows/Fonts/NotoSansCJKkr-Regular.otf"),
+            Path("C:/Windows/Fonts/NotoSansCJK-Regular.ttc"),
+            Path("C:/Windows/Fonts/meiryo.ttc"),
+            Path("C:/Windows/Fonts/meiryo.ttf"),
+            Path("C:/Windows/Fonts/YuGothR.ttc"),
+            Path("C:/Windows/Fonts/YuGothM.ttc"),
+            Path("C:/Windows/Fonts/YuGothB.ttc"),
+            Path("C:/Windows/Fonts/msgothic.ttc"),
+            Path("C:/Windows/Fonts/yumin.ttf"),
+            Path("C:/Windows/Fonts/msyh.ttc"),
+            Path("C:/Windows/Fonts/msjh.ttc"),
+            Path("C:/Windows/Fonts/segoeui.ttf"),
+            Path("C:/Windows/Fonts/arial.ttf"),
+        ]
+    elif _contains_cjk(text):
+        candidates = [
+            Path("C:/Windows/Fonts/meiryo.ttc"),
+            Path("C:/Windows/Fonts/meiryo.ttf"),
+            Path("C:/Windows/Fonts/YuGothR.ttc"),
+            Path("C:/Windows/Fonts/YuGothM.ttc"),
+            Path("C:/Windows/Fonts/YuGothB.ttc"),
+            Path("C:/Windows/Fonts/msgothic.ttc"),
+            Path("C:/Windows/Fonts/yumin.ttf"),
+            Path("C:/Windows/Fonts/msyh.ttc"),
+            Path("C:/Windows/Fonts/msjh.ttc"),
+            Path("C:/Windows/Fonts/malgun.ttf"),
+            Path("C:/Windows/Fonts/segoeui.ttf"),
+            Path("C:/Windows/Fonts/arial.ttf"),
+        ]
+    else:
+        candidates = [
+            Path("C:/Windows/Fonts/segoeui.ttf"),
+            Path("C:/Windows/Fonts/arial.ttf"),
+            Path("C:/Windows/Fonts/meiryo.ttc"),
+            Path("C:/Windows/Fonts/meiryo.ttf"),
+            Path("C:/Windows/Fonts/YuGothR.ttc"),
+            Path("C:/Windows/Fonts/YuGothM.ttc"),
+            Path("C:/Windows/Fonts/YuGothB.ttc"),
+            Path("C:/Windows/Fonts/msgothic.ttc"),
+            Path("C:/Windows/Fonts/yumin.ttf"),
+            Path("C:/Windows/Fonts/malgun.ttf"),
+            Path("C:/Windows/Fonts/msyh.ttc"),
+            Path("C:/Windows/Fonts/msjh.ttc"),
+        ]
+    for candidate in candidates:
         if candidate.exists():
             return candidate
     return None
 
 
+def _display_width(value: str) -> int:
+    return sum(2 if unicodedata.east_asian_width(ch) in {"W", "F"} else 1 for ch in value)
+
+
+def _trim_to_width(value: str, max_width: int) -> str:
+    result = ""
+    width = 0
+    for ch in value:
+        ch_width = 2 if unicodedata.east_asian_width(ch) in {"W", "F"} else 1
+        if width + ch_width > max_width:
+            break
+        result += ch
+        width += ch_width
+    return result.rstrip()
+
+
 def _wrap_title(value: str, max_lines: int = 2, chars_per_line: int = 34) -> str:
-    words = value.strip().split()
-    if not words:
+    original = value.strip()
+    if not original:
         return ""
     lines: list[str] = []
     current = ""
     max_lines = max(1, min(3, int(max_lines)))
     max_chars = max(16, min(60, int(chars_per_line)))
-    for word in words:
-        next_line = f"{current} {word}".strip()
-        if len(next_line) > max_chars and current:
+    tokens = original.split() if " " in original else list(original)
+    separator = " " if " " in original else ""
+    for word in tokens:
+        next_line = f"{current}{separator}{word}".strip()
+        if _display_width(next_line) > max_chars and current:
             lines.append(current)
             current = word
             if len(lines) == max_lines:
@@ -80,9 +186,8 @@ def _wrap_title(value: str, max_lines: int = 2, chars_per_line: int = 34) -> str
     if current and len(lines) < max_lines:
         lines.append(current)
     text = "\n".join(lines[:max_lines])
-    original = " ".join(words)
-    if len(text.replace("\n", " ")) < len(original) and not text.endswith("..."):
-        text = text[: max(0, len(text) - 3)].rstrip() + "..."
+    if len(text.replace("\n", separator)) < len(original) and not text.endswith("..."):
+        text = _trim_to_width(text, max(0, _display_width(text) - 3)).rstrip() + "..."
     return text
 
 

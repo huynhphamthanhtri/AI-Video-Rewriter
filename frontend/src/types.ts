@@ -104,15 +104,18 @@ export type PromptPreviewResponse = {
   sections: PromptPreviewSection[];
 };
 
-export type PromptForm = Omit<Preset, 'id' | 'description' | 'is_builtin' | 'name' | 'preset_schema_version' | 'prompt_template_version' | 'json_output_schema_version'> & {
+export type PromptForm = {
   source_mode: 'single' | 'multi';
   youtube_url: string;
   youtube_urls_text: string;
   ytdlp_cookies_file: string;
-  preset_name?: string;
+  target_language: string;
+  user_instruction: string;
+  output_dir_name?: string;
+  output_dir_path?: string;
 };
 
-export type SrtItem = { index: number; start: string; end: string; text: string };
+export type SrtItem = { index: number; start: string; end: string; text: string; tts_text?: string };
 
 export type VideoSegment = {
   segment_id: number;
@@ -148,13 +151,14 @@ export type RenderOptions = {
   segment_fps: 'auto' | '30' | '60';
   blur_mode: 'none' | 'review';
   tts_mode: 'none' | 'voiceover';
-  tts_engine: 'vieneu_turbo';
-  tts_language: 'auto' | 'vi' | 'en' | 'vi_en';
+  tts_engine: 'edge_tts';
   tts_persona: 'neutral' | 'sports_commentator' | 'drama_storyteller' | 'news_anchor' | 'funny_reviewer' | 'podcast_host';
   tts_voice_region: 'auto' | 'vi_north' | 'vi_south';
   tts_voice_gender: 'auto' | 'female' | 'male';
-  tts_voice_id: 'auto' | 'ly' | 'ngoc' | 'tuyen' | 'binh' | 'doan' | 'vinh';
-  tts_voice_mode: 'preset' | 'clone';
+  tts_voice_id: 'auto' | 'vi-VN-HoaiMyNeural' | 'vi-VN-NamMinhNeural' | 'en-US-JennyNeural' | 'en-US-GuyNeural'
+    | 'de-DE-KatjaNeural' | 'de-DE-ConradNeural' | 'ja-JP-NanamiNeural' | 'ja-JP-KeitaNeural'
+    | 'es-MX-DaliaNeural' | 'es-MX-JorgeNeural' | 'ko-KR-SunHiNeural' | 'ko-KR-InJoonNeural';
+  tts_voice_mode: 'preset';
   tts_clone_voice_id: string;
   tts_emotion: 'natural' | 'storytelling';
   tts_fit_policy: 'segment_uniform';
@@ -242,6 +246,7 @@ export type LicenseStatus = {
   customer_email?: string | null;
   license_id?: string | null;
   license_key_hint?: string | null;
+  cache_status?: 'fresh' | 'stale' | 'offline' | null;
   features: Record<string, boolean>;
 };
 
@@ -250,8 +255,7 @@ export type BlurRegion = { start: number; end: number; keyframes: BlurKeyframe[]
 export type BlurUploadResponse = { message: string; video_path: string; preview_url: string; width?: number | null; height?: number | null; duration_seconds?: string | null };
 export type BlurRenderResponse = { message: string; final_video_path: string; output_dir: string; video_encoder?: string | null; video_encoder_label?: string | null; video_encoder_codec?: string | null; output_codec?: string | null; output_fps?: string | null; output_resolution_actual?: string | null; output_duration_seconds?: string | null; output_file_size_bytes?: string | null };
 
-export type TtsVoice = { id: string; label: string; description: string; gender: 'female' | 'male'; region: 'vi_north' | 'vi_south'; languages: string[]; recommended_for: string[] };
-export type TtsCloneVoice = { id: string; name: string; reference_audio_path: string; created_at: number; duration_seconds?: string | null };
+export type TtsVoice = { id: string; label: string; description: string; gender: 'female' | 'male'; region?: string; languages: string[]; recommended_for?: string[]; rank?: number; best_for?: string; locale?: string };
 
 export interface TitleLinePreview {
   text: string;
@@ -388,8 +392,19 @@ export type GeminiAutoSubmitResponse = {
 
 export type GeminiSessionStatus = {
   exists: boolean;
+  session_file_exists?: boolean;
+  has_auth_cookies?: boolean;
+  live_checked?: boolean;
+  needs_login?: boolean;
+  browser_open?: boolean;
+  browser_id?: string | null;
   path: string;
+  message?: string;
+  method?: string;
 };
+
+export type GeminiThinkingMode = 'standard' | 'extended';
+export type GeminiAnalysisMode = 'deep_analysis' | 'fast';
 
 export type GeminiOpenBrowserResponse = {
   browser_id: string;
@@ -406,6 +421,7 @@ export type BatchItemProgress = {
   states: AutoPipelineStateEntry[];
   result?: Record<string, unknown> | null;
   error?: string | null;
+  render_status?: RenderJobStatus | null;
   started_at?: number | null;
   ended_at?: number | null;
 };

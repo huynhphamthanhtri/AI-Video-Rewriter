@@ -3,6 +3,9 @@ import pytest
 from app.schemas.render import RenderOptions
 from app.services.title_layout import (
     TitleLayoutResult,
+    _contains_cjk,
+    _contains_hangul,
+    _title_font_path,
     compute_title_layout,
     compute_title_preview,
     resolve_badge_text,
@@ -193,3 +196,68 @@ def test_pixel_values_scale_with_resolution():
     preview_1080p = compute_title_preview(options, 1920, 1080)
     assert preview_720p["lines"][0]["x_px"] < preview_1080p["lines"][0]["x_px"]
     assert preview_720p["safe_margin_px"] < preview_1080p["safe_margin_px"]
+
+
+class TestContainsCjk:
+    def test_japanese_title_detected(self):
+        assert _contains_cjk("脱出確率1_最悪のトラップハウスから生き残れ")
+
+    def test_hiragana_detected(self):
+        assert _contains_cjk("のからは")
+
+    def test_katakana_detected(self):
+        assert _contains_cjk("トラップハウスリアル")
+
+    def test_vietnamese_not_detected(self):
+        assert not _contains_cjk("Sự thật kinh hoàng đằng sau đứa trẻ")
+
+    def test_english_not_detected(self):
+        assert not _contains_cjk("Breaking News Report 2024")
+
+    def test_numbers_and_symbols_not_detected(self):
+        assert not _contains_cjk("Hello World! 12345 **test**")
+
+    def test_empty_string_not_detected(self):
+        assert not _contains_cjk("")
+
+    def test_korean_detected(self):
+        assert _contains_cjk("안녕하세요")
+
+    def test_chinese_simplified_detected(self):
+        assert _contains_cjk("你好世界")
+
+
+class TestContainsHangul:
+    def test_korean_hangul_detected(self):
+        assert _contains_hangul("한국어 제목")
+
+    def test_korean_mixed_detected(self):
+        assert _contains_hangul("안녕하세요 Hello 123")
+
+    def test_japanese_not_detected(self):
+        assert not _contains_hangul("脱出確率")
+
+    def test_chinese_not_detected(self):
+        assert not _contains_hangul("你好世界")
+
+    def test_vietnamese_not_detected(self):
+        assert not _contains_hangul("Sự thật kinh hoàng")
+
+    def test_english_not_detected(self):
+        assert not _contains_hangul("Breaking News")
+
+    def test_empty_not_detected(self):
+        assert not _contains_hangul("")
+
+
+class TestTitleFontPath:
+    def test_korean_prefers_malgun(self, monkeypatch):
+        font = _title_font_path("한국어 제목")
+        assert font is not None
+        assert font.name.startswith("malgun")
+
+    def test_non_hangul_cjk_prefers_meiryo_if_malgun_not_available(self, monkeypatch):
+        font = _title_font_path("脱出確率")
+        assert font is not None
+        # should not pick malgun for Japanese text
+        assert not font.name.startswith("malgun")

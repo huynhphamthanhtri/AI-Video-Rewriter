@@ -2,35 +2,37 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, HttpUrl
-
-from app.schemas.preset import AdaptationMode, LocalizationLevel, NarratorPersona
+from pydantic import BaseModel, Field, HttpUrl, ConfigDict
 
 
 class PromptGenerateRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     youtube_url: HttpUrl
     youtube_urls: list[HttpUrl] = Field(default_factory=list)
     source_mode: Literal["single", "multi"] = "single"
     preset_name: str | None = None
-    rewrite_style: str
-    target_audience: str
-    tone: str
-    target_duration: str
-    retention_mode: str
-    hook_style: str
-    clip_strategy: str
-    reuse_level: str
-    content_density: str
+    rewrite_style: str = "Storytelling"
+    target_audience: str = "Đại chúng"
+    tone: str = "Thân thiện"
+    target_duration: str = "3-5 phút"
+    retention_mode: str = "Cao"
+    hook_style: str = "Cảnh đắt giá"
+    clip_strategy: str = "Giữ đầy đủ ngữ cảnh"
+    reuse_level: str = "Trung bình"
+    content_density: str = "Trung bình"
     target_language: str = "Tiếng Việt"
     target_market: str = "Việt Nam"
-    localization_level: LocalizationLevel = "medium"
+    localization_level: str = "medium"
     rename_characters: bool = True
     adapt_culture: bool = True
     adapt_currency: bool = True
     adapt_units: bool = True
     adapt_company_names: bool = True
-    adaptation_mode: AdaptationMode = "localized"
-    narrator_persona: NarratorPersona = "neutral_narrator"
+    adaptation_mode: str = "localized"
+    narrator_persona: str = "neutral_narrator"
+    domain: str = "general"
+    user_instruction: str = ""
 
 
 class PromptGenerateResponse(BaseModel):
@@ -57,24 +59,17 @@ class PromptHealthResponse(BaseModel):
 
 
 class PromptPreviewRequest(BaseModel):
-    """Preview-only schema — intentionally minimal.
+    model_config = ConfigDict(extra="ignore")
 
-    Carries only the fields needed to generate a prompt preview.
-    Does NOT include youtube_url since preview is advisory and
-    runs before the user supplies a URL.
-    Does NOT include youtube_urls or source_mode (preview is
-    always single-source).
-    Use PromptPreviewResponse for the result.
-    """
-    rewrite_style: str
-    target_audience: str
-    tone: str
-    target_duration: str
-    retention_mode: str
-    hook_style: str
-    clip_strategy: str
-    reuse_level: str
-    content_density: str
+    rewrite_style: str = "Storytelling"
+    target_audience: str = "Đại chúng"
+    tone: str = "Thân thiện"
+    target_duration: str = "3-5 phút"
+    retention_mode: str = "Cao"
+    hook_style: str = "Cảnh đắt giá"
+    clip_strategy: str = "Giữ đầy đủ ngữ cảnh"
+    reuse_level: str = "Trung bình"
+    content_density: str = "Trung bình"
     target_language: str = "Tiếng Việt"
     target_market: str = "Việt Nam"
     localization_level: str = "medium"
@@ -85,6 +80,7 @@ class PromptPreviewRequest(BaseModel):
     adapt_company_names: bool = True
     adaptation_mode: str = "localized"
     narrator_persona: str = "neutral_narrator"
+    user_instruction: str = ""
 
 
 class PromptPreviewSection(BaseModel):
@@ -120,12 +116,12 @@ class PromptRunRead(BaseModel):
     health_score: int | None
     health_level: str | None
     error_message: str | None
-    preset_name: str | None
-    rewrite_style: str | None
     duration_ms: float | None
-    preset_schema_version: int | None
-    prompt_template_version: int | None
-    json_output_schema_version: int | None
+    preset_name: str | None = None
+    rewrite_style: str | None = None
+    preset_schema_version: int | None = None
+    prompt_template_version: int | None = None
+    json_output_schema_version: int | None = None
 
 
 class PromptRunStats(BaseModel):
@@ -140,22 +136,16 @@ class PromptRunStats(BaseModel):
     prev_7d_count: int = 0
 
 
-class PresetRecommendationItem(BaseModel):
-    preset_name: str
-    confidence: float
-    confidence_label: str  # "strong" | "medium" | "weak" | "none"
-    matched_keywords: list[str] = []
-
-
 class PresetRecommendRequest(BaseModel):
-    video_title: str | None = None
-    youtube_url: str | None = None
+    model_config = ConfigDict(extra="ignore")
+
+    youtube_urls: list[str] = []
+    target_language: str = "Tiếng Việt"
+    user_instruction: str = ""
 
 
 class PresetRecommendResponse(BaseModel):
-    title: str | None
-    title_source: str  # "provided" | "extracted" | "none"
-    recommendations: list[PresetRecommendationItem] = []
+    recommendations: list[dict] = []
 
 
 class GeminiAutoSubmitRequest(BaseModel):
@@ -163,8 +153,15 @@ class GeminiAutoSubmitRequest(BaseModel):
     render_options: dict = {}
     subtitle_mode: str = "burn"
     ytdlp_cookies_file: str | None = None
+    ytdlp_cookies_from_browser: str | None = None
     local_video_path: str | None = None
     user_data_dir: str | None = None
+    output_dir_name: str | None = None
+    output_dir_path: str | None = None
+    headless: bool = True
+    gemini_thinking_mode: Literal["standard", "extended"] = "extended"
+    gemini_analysis_mode: Literal["deep_analysis", "fast"] = "deep_analysis"
+    gemini_dry_run: bool = False
 
 
 class GeminiAutoSubmitResponse(BaseModel):

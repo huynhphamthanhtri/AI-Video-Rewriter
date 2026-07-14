@@ -14,14 +14,16 @@ from app.services.prompt_generator import PromptGenerator
 DUMMY_URL = HttpUrl("https://www.youtube.com/watch?v=preview_dummy")
 
 SECTION_MARKERS: list[tuple[str, str]] = [
-    ("Mở đầu", "Bạn là chuyên gia"),
-    ("Intent", "Cấu hình viết lại:"),
-    ("Strategy", "Chiến lược giữ chân"),
-    ("Localization", "Cấu hình ngôn ngữ và bản địa hóa:"),
+    ("Role", "LỚP 1"),
+    ("Source Rules", "CHỐNG BỊA NỘI DUNG"),
+    ("Intent", "CẤU HÌNH VIẾT LẠI"),
+    ("Strategy", "LỚP 2"),
+    ("Localization", "NGÔN NGỮ VÀ BẢN ĐỊA HÓA"),
+    ("Story", "LỚP 3"),
     ("Subtitle Rules", "RÀNG BUỘC SUBTITLE"),
     ("Content Quality", "CHẤT LƯỢNG NỘI DUNG"),
     ("Hook Requirements", "HOOK BẮT BUỘC"),
-    ("Task Assignment", "Nhiệm vụ:"),
+    ("Task Assignment", "NHIỆM VỤ"),
     ("Alignment Rules", "SRT-SCENE ALIGNMENT RULES"),
     ("Domain Rules", "DOMAIN RULES"),
     ("Validation", "QUY TẮC JSON BẮT BUỘC:"),
@@ -54,7 +56,7 @@ def _to_generate_request(preview: PromptPreviewRequest) -> PromptGenerateRequest
         adapt_units=preview.adapt_units,
         adapt_company_names=preview.adapt_company_names,
         adaptation_mode=preview.adaptation_mode,
-        narrator_persona=preview.narrator_persona,
+        narrator_persona="neutral_narrator",
     )
 
 

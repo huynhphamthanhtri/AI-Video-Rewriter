@@ -34,18 +34,43 @@ Source: "{#SourceRoot}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
 Source: "..\..\icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\MrTris_AUTO"; Filename: "{app}\runtime\python\python.exe"; Parameters: """{app}\MrTris_AUTO.py"""; WorkingDir: "{app}"; IconFilename: "{app}\icon.ico"
+Name: "{group}\MrTris_AUTO"; Filename: "{app}\runtime\python\pythonw.exe"; Parameters: """{app}\MrTris_AUTO.py"""; WorkingDir: "{app}"; IconFilename: "{app}\icon.ico"; Check: PythonwAvailable
+Name: "{group}\MrTris_AUTO (console)"; Filename: "{app}\runtime\python\python.exe"; Parameters: """{app}\MrTris_AUTO.py"""; WorkingDir: "{app}"; IconFilename: "{app}\icon.ico"
 Name: "{group}\Diagnostics"; Filename: "{app}\runtime\python\python.exe"; Parameters: """{app}\MrTris_AUTO_Diagnostics.py"""; WorkingDir: "{app}"; IconFilename: "{app}\icon.ico"
 Name: "{group}\Repair"; Filename: "{app}\runtime\python\python.exe"; Parameters: """{app}\MrTris_AUTO_Repair.py"" --backup-db --sync-presets"; WorkingDir: "{app}"; IconFilename: "{app}\icon.ico"
-Name: "{autodesktop}\MrTris_AUTO"; Filename: "{app}\runtime\python\python.exe"; Parameters: """{app}\MrTris_AUTO.py"""; WorkingDir: "{app}"; Tasks: desktopicon; IconFilename: "{app}\icon.ico"
+Name: "{autodesktop}\MrTris_AUTO"; Filename: "{app}\runtime\python\pythonw.exe"; Parameters: """{app}\MrTris_AUTO.py"""; WorkingDir: "{app}"; Tasks: desktopicon; IconFilename: "{app}\icon.ico"; Check: PythonwAvailable
 
 [Run]
-Filename: "{app}\runtime\python\python.exe"; Parameters: """{app}\MrTris_AUTO.py"""; WorkingDir: "{app}"; Description: "Launch MrTris_AUTO"; Flags: nowait postinstall skipifsilent runasoriginaluser
+Filename: "{app}\runtime\python\pythonw.exe"; Parameters: """{app}\MrTris_AUTO.py"""; WorkingDir: "{app}"; Description: "Launch MrTris_AUTO"; Flags: nowait postinstall skipifsilent runasoriginaluser
+
+; Post-install: run quick diagnostics check to verify installation
+Filename: "{app}\runtime\python\python.exe"; Parameters: """{app}\MrTris_AUTO_Diagnostics.py"" --quick"; WorkingDir: "{app}"; Flags: nowait skipifsilent runasoriginaluser; Description: "Run first-time diagnostics"
+
+[InstallDelete]
+; Remove stale preset files no longer in the voice list
+Type: filesandordirs; Name: "{app}\backend\app\services\tts_voices\presets\thai_son"
+
+[UninstallRun]
+; Clean temp files on uninstall (user data and outputs are kept)
+Filename: "{app}\runtime\python\python.exe"; Parameters: """{app}\MrTris_AUTO_Repair.py"" --clean-temp"; WorkingDir: "{app}"; Flags: runhidden
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
 
 [Code]
+function PythonwAvailable(): Boolean;
+var
+  PythonwPath: String;
+begin
+  PythonwPath := ExpandConstant('{app}\runtime\python\pythonw.exe');
+  Result := FileExists(PythonwPath);
+end;
+
+function InitializeSetup(): Boolean;
+begin
+  Result := True;
+end;
+
 procedure StopRunningAppProcesses();
 var
   ResultCode: Integer;
@@ -70,6 +95,8 @@ end;
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   StopRunningAppProcesses();
+  if DirExists(ExpandConstant('{app}')) then
+    DelTree(ExpandConstant('{app}'), True, True, True);
   Result := '';
 end;
 

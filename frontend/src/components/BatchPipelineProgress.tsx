@@ -1,5 +1,5 @@
-import { CheckCircle2, Loader2, XCircle, Ban, ExternalLink } from 'lucide-react';
-import type { BatchProgress } from '../types';
+import { CheckCircle2, Loader2, XCircle, Ban, ExternalLink, Clock } from 'lucide-react';
+import type { BatchProgress, RenderJobStatus } from '../types';
 import { AutoPipelineProgress } from './AutoPipelineProgress';
 
 function statusLabel(status: string) {
@@ -16,6 +16,36 @@ function StatusIcon({ status }: { status: string }) {
   if (status === 'cancelled') return <Ban size={18} className="text-slate-400" />;
   if (status === 'running') return <Loader2 size={18} className="animate-spin text-cyan-400" />;
   return <div className="h-[18px] w-[18px] rounded-full border border-slate-600" />;
+}
+
+function fmtTime(seconds: number | null | undefined): string {
+  if (seconds == null || seconds < 0) return '--';
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+function RenderProgressPanel({ renderStatus }: { renderStatus: RenderJobStatus }) {
+  const pct = renderStatus.progress ?? 0;
+  return <div className="mt-3 rounded-xl border border-violet-500/20 bg-violet-500/10 p-3">
+    <div className="mb-2 flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-violet-200">
+      <Clock size={14} /> Render Progress
+    </div>
+    <div className="progress-track h-2">
+      <div className="progress-fill" style={{ width: `${Math.min(100, Math.max(0, pct))}%` }} />
+    </div>
+    <p className="mt-1 text-xs text-slate-400">{renderStatus.message || renderStatus.step || ''}</p>
+    <div className="mt-2 grid grid-cols-3 gap-1 text-[11px] font-medium text-slate-400">
+      <span>Đã chạy: {fmtTime(renderStatus.elapsed_seconds)}</span>
+      <span>Còn: {fmtTime(renderStatus.remaining_seconds)}</span>
+      <span>Ước tính: {fmtTime(renderStatus.estimated_total_seconds)}</span>
+    </div>
+    {renderStatus.completed_segments != null && renderStatus.total_segments != null && (
+      <p className="mt-1 text-[11px] text-slate-400">
+        Segment: {renderStatus.completed_segments}/{renderStatus.total_segments}
+      </p>
+    )}
+  </div>;
 }
 
 export function BatchPipelineProgress({ progress, onCancel }: { progress: BatchProgress | null; onCancel: () => void }) {
@@ -56,7 +86,10 @@ export function BatchPipelineProgress({ progress, onCancel }: { progress: BatchP
             {Boolean(item.result?.final_video_path) && <p className="mt-2 break-all text-xs text-emerald-300">Output: {String(item.result?.final_video_path)}</p>}
           </div>
         </div>
-        {runningItem?.index === item.index && item.task_id && <div className="mt-3">
+        {item.status === 'running' && item.render_status && (
+          <RenderProgressPanel renderStatus={item.render_status} />
+        )}
+        {runningItem?.index === item.index && item.task_id && !item.render_status && <div className="mt-3">
           <AutoPipelineProgress progress={{ task_id: item.task_id, step: 'batch_item', status: 'running', message: 'Đang xử lý video trong batch...', detail: null, result: item.result ?? null, error: item.error ?? null, states: item.states }} onCancel={onCancel} />
         </div>}
       </div>)}
