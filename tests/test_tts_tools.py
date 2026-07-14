@@ -430,3 +430,51 @@ class TestReconcilePayloadTtsTimeline:
         assert data["failed"] is True
         assert data["failure_code"] == "TTS_TIMING_RECONCILE_TOTAL_TOO_LARGE"
         assert data["candidate_total_shift_seconds"] > TTS_MAX_TOTAL_AUTO_SHIFT_SECONDS
+
+
+class TestMixVoiceoverDuration:
+    """Verify mix_voiceover uses duration=longest when voiceover > video."""
+
+    def test_mix_voiceover_uses_longest_duration_when_voiceover_longer(self, tmp_path):
+        from app.services.tts_tools import TtsVoiceoverService
+        from app.schemas.render import RenderOptions
+
+        video_p = tmp_path / "video.mp4"
+        voiceover_p = tmp_path / "voiceover.wav"
+        out_p = tmp_path / "out.mp4"
+        video_p.write_text("")
+        voiceover_p.write_text("")
+
+        cmd_args: list[str] = []
+
+        def mock_probe_media_duration(p: object) -> float:
+            return 10.0
+
+        def mock_probe_audio_duration(p: object) -> float:
+            return 12.0
+
+        def mock_video_has_audio(p: object) -> bool:
+            return True
+
+        def mock_run(cmd: list[str]) -> None:
+            cmd_args.extend(cmd)
+
+        with (
+            patch("app.services.tts_tools.probe_media_duration", mock_probe_media_duration),
+            patch("app.services.tts_tools.probe_audio_duration", mock_probe_audio_duration),
+            patch("app.services.tts_tools.video_has_audio", mock_video_has_audio),
+            patch("app.services.tts_tools._run", mock_run),
+        ):
+            TtsVoiceoverService().mix_voiceover(
+                video_p, voiceover_p, out_p,
+                RenderOptions(original_audio_mode="lower_fixed"),
+            )
+
+        cmd_str = " ".join(cmd_args)
+        assert "duration=longest" in cmd_str, f"Expected duration=longest, got:\n{cmd_str}"
+        assert "duration=first" not in cmd_str, (
+            f"Should not contain duration=first, got:\n{cmd_str}"
+        )
+        assert "tpad=stop_mode=clone:stop_duration=2.000" in cmd_str, (
+            f"Expected tpad=...2.000, got:\n{cmd_str}"
+        )

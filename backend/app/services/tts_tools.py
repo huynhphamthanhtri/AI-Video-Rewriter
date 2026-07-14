@@ -701,7 +701,7 @@ class TtsVoiceoverService:
         if options.original_audio_mode == "mute" or not video_has_audio(video_path):
             filter_complex = f"[1:a]volume={options.voiceover_volume:.3f}[a]"
         else:
-            filter_complex = f"[0:a]volume={options.original_audio_volume:.3f}[orig];[1:a]volume={options.voiceover_volume:.3f}[vo];[orig][vo]amix=inputs=2:duration=first:normalize=0[a]"
+            filter_complex = f"[0:a]volume={options.original_audio_volume:.3f}[orig];[1:a]volume={options.voiceover_volume:.3f}[vo];[orig][vo]amix=inputs=2:duration=longest:normalize=0[a]"
         cmd = [settings.ffmpeg_binary, "-y", "-i", str(video_path), "-i", str(voiceover_path), "-filter_complex", filter_complex, "-map", "0:v:0", "-map", "[a]"]
         if pad_seconds > 0.05:
             from app.services.video_tools import select_video_encoder, video_encoder_args, quality_for_stability

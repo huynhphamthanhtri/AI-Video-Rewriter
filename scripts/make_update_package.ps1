@@ -238,10 +238,10 @@ $manifestContent = @{
     download_url          = "https://github.com/huynhphamthanhtri/MrTris_AUTO_RELEASES/releases/download/v$TargetVersion/$zipName"
     sha256                = $hash
     notes                 = @(
-        "v1.0.9 Relaxed TTS reconciliation pair cap + failure diagnostics",
-        "Fix: Increase TTS_MAX_PAIR_AUTO_SHIFT_SECONDS from 0.75s to 2.0s",
-        "Fix: Write tts_timeline_reconciliation_failed.json before raising",
-        "New: Add tests for 1.346s shift, pair cap fail, and total cap fail"
+        "v1.0.10 Fix voiceover truncation / dead-air tail after timeline reconciliation",
+        "Fix: Use duration=longest in amix so voiceover covers full tpad-extended video",
+        "Fix: Prevent duration=first from truncating voiceover when original video audio is shorter",
+        "New: Regression test for mix_voiceover duration=longest + tpad"
     )
 }
 $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
