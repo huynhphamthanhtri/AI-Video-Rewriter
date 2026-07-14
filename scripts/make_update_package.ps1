@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     MrTris_AUTO Update Package Builder — creates a patch zip
     with SHA256 manifest for GitHub Releases upload.

@@ -1627,6 +1627,17 @@ class RenderPipeline:
             segment_speeds = {p.segment_id: p.speed_factor for p in tts_segment_plans}
 
             _apply_segment_plan_to_payload(payload, tts_segment_plans, srt_shifts)
+
+            # ── TTS timeline reconciliation ──
+            if progress_callback:
+                progress_callback({"step": "TTS reconcile", "message": "Đang cân chỉnh timeline voiceover...", "progress": 31, "phase": "tts_reconcile", "phase_progress": 0.0})
+            tts_service = TtsVoiceoverService()
+            reconcile_plans, _, _ = tts_service.prepare_voiceover_plans(
+                payload, output_dir, workspace_dir, options,
+                segment_speeds=segment_speeds,
+                progress_callback=progress_callback, cancel_callback=cancel_callback,
+            )
+            tts_service.reconcile_payload_tts_timeline(payload, reconcile_plans, output_dir)
             mark_timing("segment_plan", step_started, {"segment_count": len(tts_segment_plans)})
 
         clips_dir = workspace_dir / "segments"

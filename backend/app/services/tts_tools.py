@@ -30,6 +30,9 @@ TTS_STUDIO_OUTPUTS_DIR = settings.temp_dir / "tts_studio_outputs"
 TTS_STUDIO_MAX_CHARS = 10000
 ALLOWED_STUDIO_FORMATS = frozenset({"wav", "mp3"})
 TTS_OVERLAP_HARD_FAIL_SECONDS = 0.25
+TTS_MIN_CUE_GAP_SECONDS = 0.05
+TTS_MAX_PAIR_AUTO_SHIFT_SECONDS = 0.75
+TTS_MAX_TOTAL_AUTO_SHIFT_SECONDS = 5.0
 
 EDGE_TTS_VOICES = [
     {"id": "vi-VN-HoaiMyNeural", "label": "HoaiMy", "description": "Vietnamese female neural voice", "gender": "female", "languages": ["vi"], "locale": "vi-VN", "rank": 1, "best_for": "Vietnamese"},
@@ -461,7 +464,16 @@ class TtsVoiceoverService:
         natural_paths.sort(key=lambda x: x[1])
         return natural_durations, natural_paths
 
-    def generate_voiceover(self, payload: GeminiPayloadSchema, output_dir: Path, workspace_dir: Path, options: RenderOptions, video_duration: float, progress_callback=None, cancel_callback=None, segment_speeds: dict[int | None, float] | None = None) -> dict[str, Any]:
+    def prepare_voiceover_plans(
+        self,
+        payload: GeminiPayloadSchema,
+        output_dir: Path,
+        workspace_dir: Path,
+        options: RenderOptions,
+        segment_speeds: dict[int | None, float] | None = None,
+        progress_callback=None,
+        cancel_callback=None,
+    ) -> tuple[list[TtsCuePlan], list[tuple[Path, float]], dict[int | None, float]]:
         if options.tts_engine != "edge_tts":
             raise RuntimeError("Edge TTS là engine TTS duy nhất được hỗ trợ.")
         tts_dir = workspace_dir / "tts"
@@ -512,9 +524,84 @@ class TtsVoiceoverService:
             plan_text = _normalize_tts_text(item["cue"].tts_text or item["cue"].text)
             plans.append(TtsCuePlan(index=item["cue"].index, segment_id=item["segment_id"], text=plan_text, start_seconds=item["adjusted_start"], end_seconds=item["adjusted_end"], slot_duration=slot, generated_duration=item["natural_duration"], applied_speed=speed, final_duration=final_duration, status="warning" if warning else "ok", warning=warning))
             fitted_paths.append((final_path, item["adjusted_start"]))
+        return plans, fitted_paths, segment_speeds
+
+    @staticmethod
+    def reconcile_payload_tts_timeline(payload: GeminiPayloadSchema, plans: list[TtsCuePlan], output_dir: Path | None = None) -> dict:
+        sorted_plans = sorted(plans, key=lambda p: p.start_seconds)
+        srt_by_index = {item.index: item for item in payload.srt}
+
+        carry_shift = 0.0
+        total_shift = 0.0
+        previous_end = 0.0
+        adjustments = []
+
+        for plan in sorted_plans:
+            cue = srt_by_index.get(plan.index)
+            if not cue:
+                continue
+
+            orig_start = srt_timestamp_to_seconds(cue.start)
+            orig_end = srt_timestamp_to_seconds(cue.end)
+
+            new_start = orig_start + carry_shift
+            new_end = max(
+                orig_end + carry_shift,
+                new_start + plan.final_duration,
+            )
+
+            if new_start < previous_end + TTS_MIN_CUE_GAP_SECONDS:
+                needed_shift = (previous_end + TTS_MIN_CUE_GAP_SECONDS) - new_start
+                if needed_shift > TTS_MAX_PAIR_AUTO_SHIFT_SECONDS:
+                    raise RuntimeError(
+                        f"TTS_TIMING_RECONCILE_FAILED: cue {plan.index} requires "
+                        f"{needed_shift:.3f}s shift but max pair is {TTS_MAX_PAIR_AUTO_SHIFT_SECONDS}s."
+                    )
+                if total_shift + needed_shift > TTS_MAX_TOTAL_AUTO_SHIFT_SECONDS:
+                    raise RuntimeError(
+                        f"TTS_TIMING_RECONCILE_TOTAL_TOO_LARGE: total shift "
+                        f"{total_shift + needed_shift:.3f}s exceeds {TTS_MAX_TOTAL_AUTO_SHIFT_SECONDS}s."
+                    )
+
+                carry_shift += needed_shift
+                total_shift += needed_shift
+                new_start += needed_shift
+                new_end += needed_shift
+                adjustments.append({
+                    "cue_index": plan.index,
+                    "shift_seconds": round(needed_shift, 3),
+                    "reason": "previous cue final audio required more space",
+                })
+
+            cue.start = seconds_to_srt_timestamp(new_start)
+            cue.end = seconds_to_srt_timestamp(new_end)
+            previous_end = new_end
+
+        report = {
+            "applied": len(adjustments) > 0,
+            "min_gap_seconds": TTS_MIN_CUE_GAP_SECONDS,
+            "max_pair_auto_shift_seconds": TTS_MAX_PAIR_AUTO_SHIFT_SECONDS,
+            "max_total_auto_shift_seconds": TTS_MAX_TOTAL_AUTO_SHIFT_SECONDS,
+            "total_shift_seconds": round(total_shift, 3),
+            "adjustments": adjustments,
+        }
+
+        if output_dir:
+            report_path = output_dir / "tts_timeline_reconciliation.json"
+            report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        return report
+
+    def generate_voiceover(self, payload: GeminiPayloadSchema, output_dir: Path, workspace_dir: Path, options: RenderOptions, video_duration: float, progress_callback=None, cancel_callback=None, segment_speeds: dict[int | None, float] | None = None) -> dict[str, Any]:
+        plans, fitted_paths, seg_speeds = self.prepare_voiceover_plans(
+            payload, output_dir, workspace_dir, options,
+            segment_speeds=segment_speeds,
+            progress_callback=progress_callback, cancel_callback=cancel_callback,
+        )
         voiceover_path = output_dir / "voiceover.wav"
         self._validate_no_voiceover_overlap(plans)
-        self._build_voiceover_track(fitted_paths, voiceover_path, video_duration)
+        track_duration = max(video_duration, max(p.end_seconds for p in plans) + 0.1) if plans else video_duration
+        self._build_voiceover_track(fitted_paths, voiceover_path, track_duration)
         voice_data = resolve_edge_tts_voice(options, payload)
         plan_path = output_dir / "tts_plan.json"
         warnings_list = [plan.warning for plan in plans if plan.warning]
@@ -549,7 +636,7 @@ class TtsVoiceoverService:
             "fit_policy": options.tts_fit_policy,
             "max_speed": options.tts_max_speed,
             "max_chars": options.tts_max_chars,
-            "segment_speeds": {str(key): value for key, value in segment_speeds.items()},
+            "segment_speeds": {str(key): value for key, value in seg_speeds.items()},
             "warnings": warnings_list,
             "cues": [plan.__dict__ for plan in plans],
             "voiceover_path": str(voiceover_path),
@@ -558,7 +645,7 @@ class TtsVoiceoverService:
                 "total_big_gap_seconds": round(total_big_gap_seconds, 2),
                 "max_gap_seconds": round(max_gap_seconds, 2),
                 "overlap_count": overlap_count,
-                "max_overlap_seconds": round(max_overlap_seconds, 2),
+                "max_overlap_seconds": round(max_overlap_seconds, 3),
                 "last_cue_end_seconds": round(last_end, 2),
             },
         }
@@ -597,7 +684,7 @@ class TtsVoiceoverService:
                 if overlap > TTS_OVERLAP_HARD_FAIL_SECONDS:
                     raise RuntimeError(
                         f"TTS_TIMING_OVERLAP: cue {prev_index} overlaps cue {plan.index} "
-                        f"by {overlap:.2f}s. Refusing to mix overlapping voiceover."
+                        f"by {overlap:.3f}s. Refusing to mix overlapping voiceover."
                     )
             prev_end = max(prev_end, plan.end_seconds)
             prev_index = plan.index
