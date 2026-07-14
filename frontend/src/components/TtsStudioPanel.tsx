@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { Download, Loader2, Play, Volume2 } from 'lucide-react';
+import { Download, FolderOpen, Loader2, Play, Volume2 } from 'lucide-react';
 import { toast } from 'sonner';
-import { fetchTtsStatus, fetchTtsVoices, generateStandaloneTts, ttsAudioUrl } from '../api';
+import { fetchTtsStatus, fetchTtsVoices, generateStandaloneTts, openOutputFolder, ttsAudioUrl } from '../api';
 import type { TtsVoice } from '../types';
 import { Card, Pill, SectionTitle } from './common';
 
@@ -19,18 +19,88 @@ const LOCALE_ORDER = ['vi-VN', 'en-US', 'ko-KR', 'ja-JP', 'de-DE', 'es-MX'];
 const WARN_CHARS = 5000;
 const MAX_CHARS = 10000;
 
+type TtsStudioSessionState = {
+  selectedLocale: string;
+  selectedVoiceId: string;
+  text: string;
+  format: 'wav' | 'mp3';
+  audioUrl: string | null;
+  downloadUrl: string | null;
+  filename: string | null;
+  outputDir: string | null;
+};
+
+const ttsStudioSessionState: TtsStudioSessionState = {
+  selectedLocale: 'vi-VN',
+  selectedVoiceId: '',
+  text: '',
+  format: 'wav',
+  audioUrl: null,
+  downloadUrl: null,
+  filename: null,
+  outputDir: null,
+};
+
 export function TtsStudioPanel() {
   const [ttsStatus, setTtsStatus] = useState<{ status: string; message: string } | null>(null);
   const [voices, setVoices] = useState<TtsVoice[]>([]);
-  const [selectedLocale, setSelectedLocale] = useState('vi-VN');
-  const [selectedVoiceId, setSelectedVoiceId] = useState('');
-  const [text, setText] = useState('');
-  const [format, setFormat] = useState<'wav' | 'mp3'>('wav');
+  const [selectedLocale, setSelectedLocaleState] = useState(ttsStudioSessionState.selectedLocale);
+  const [selectedVoiceId, setSelectedVoiceIdState] = useState(ttsStudioSessionState.selectedVoiceId);
+  const [text, setTextState] = useState(ttsStudioSessionState.text);
+  const [format, setFormatState] = useState<'wav' | 'mp3'>(ttsStudioSessionState.format);
   const [generating, setGenerating] = useState(false);
-  const [audioUrl, setAudioUrl] = useState<string | null>(null);
-  const [filename, setFilename] = useState<string | null>(null);
+  const [audioUrl, setAudioUrlState] = useState<string | null>(ttsStudioSessionState.audioUrl);
+  const [downloadUrl, setDownloadUrlState] = useState<string | null>(ttsStudioSessionState.downloadUrl);
+  const [filename, setFilenameState] = useState<string | null>(ttsStudioSessionState.filename);
+  const [outputDir, setOutputDirState] = useState<string | null>(ttsStudioSessionState.outputDir);
   const [previewingVoiceId, setPreviewingVoiceId] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement>(null);
+
+  function syncSession() {
+    Object.assign(ttsStudioSessionState, {
+      selectedLocale, selectedVoiceId, text, format, audioUrl, downloadUrl, filename, outputDir,
+    });
+  }
+
+  function setSelectedLocale(value: string) {
+    setSelectedLocaleState(value);
+    setAudioUrlState(null);
+    setDownloadUrlState(null);
+    setFilenameState(null);
+    setOutputDirState(null);
+  }
+
+  function setSelectedVoiceId(value: string) {
+    setSelectedVoiceIdState(value);
+    setAudioUrlState(null);
+    setDownloadUrlState(null);
+    setFilenameState(null);
+    setOutputDirState(null);
+  }
+
+  function setText(value: string) {
+    setTextState(value);
+    if (audioUrl) {
+      setAudioUrlState(null);
+      setDownloadUrlState(null);
+      setFilenameState(null);
+      setOutputDirState(null);
+    }
+  }
+
+  function setFormat(value: 'wav' | 'mp3') {
+    setFormatState(value);
+    setAudioUrlState(null);
+    setDownloadUrlState(null);
+    setFilenameState(null);
+    setOutputDirState(null);
+  }
+
+  useEffect(() => {
+    Object.assign(ttsStudioSessionState, {
+      selectedLocale, selectedVoiceId, text, format, audioUrl, downloadUrl, filename, outputDir,
+    });
+  }, [selectedLocale, selectedVoiceId, text, format, audioUrl, downloadUrl, filename, outputDir]);
 
   useEffect(() => {
     void fetchTtsStatus().then(setTtsStatus).catch(() => setTtsStatus({ status: 'error', message: 'Không kiểm tra được trạng thái TTS.' }));
@@ -38,11 +108,13 @@ export function TtsStudioPanel() {
       setVoices(data.voices);
       const sortedLocales = LOCALE_ORDER.filter(l => data.voices.some(v => v.locale === l));
       const firstLocale = sortedLocales[0] ?? data.voices[0]?.locale ?? 'vi-VN';
-      setSelectedLocale(firstLocale);
-      const firstInLocale = data.voices
-        .filter(v => v.locale === firstLocale)
-        .sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99));
-      if (firstInLocale.length > 0) setSelectedVoiceId(firstInLocale[0].id);
+      if (!ttsStudioSessionState.selectedVoiceId) {
+        setSelectedLocale(firstLocale);
+        const firstInLocale = data.voices
+          .filter(v => v.locale === firstLocale)
+          .sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99));
+        if (firstInLocale.length > 0) setSelectedVoiceId(firstInLocale[0].id);
+      }
     }).catch(() => setVoices([]));
   }, []);
 
@@ -54,15 +126,23 @@ export function TtsStudioPanel() {
 
   const canGenerate = ttsStatus?.status === 'ready' && selectedVoiceId && text.trim().length > 0 && !generating;
 
+  const estimatedSeconds = Math.max(3, Math.ceil(text.trim().length / 120));
+
   async function handleGenerate() {
     if (!canGenerate) return;
     setGenerating(true);
-    setAudioUrl(null);
-    setFilename(null);
+    setAudioUrlState(null);
+    setDownloadUrlState(null);
+    setFilenameState(null);
+    setOutputDirState(null);
     try {
       const res = await generateStandaloneTts({ voice_id: selectedVoiceId, text: text.trim(), format });
-      setAudioUrl(ttsAudioUrl(res.audio_path));
-      setFilename(res.filename);
+      const previewUrl = ttsAudioUrl(res.audio_path);
+      const dlUrl = ttsAudioUrl(res.audio_path, true);
+      setAudioUrlState(previewUrl);
+      setDownloadUrlState(dlUrl);
+      setFilenameState(res.filename);
+      setOutputDirState(res.output_dir);
       toast.success(res.message);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Tạo TTS thất bại.');
@@ -73,15 +153,11 @@ export function TtsStudioPanel() {
 
   function handleSelectVoice(id: string) {
     setSelectedVoiceId(id);
-    setAudioUrl(null);
-    setFilename(null);
   }
 
   function handleLocaleChange(locale: string) {
     setSelectedLocale(locale);
     setSelectedVoiceId('');
-    setAudioUrl(null);
-    setFilename(null);
     const firstInLocale = voices
       .filter(v => v.locale === locale)
       .sort((a, b) => (a.rank ?? 99) - (b.rank ?? 99));
@@ -150,7 +226,7 @@ export function TtsStudioPanel() {
                     <button
                       className="btn-mini shrink-0"
                       disabled={previewingVoiceId === voice.id}
-                      onClick={e => { e.stopPropagation(); setPreviewingVoiceId(voice.id); setAudioUrl(`/api/tts/prebuilt-preview/${voice.id}`); setPreviewingVoiceId(null); }}
+                      onClick={e => { e.stopPropagation(); setPreviewingVoiceId(voice.id); setAudioUrlState(`/api/tts/prebuilt-preview/${voice.id}`); setDownloadUrlState(null); setFilenameState(null); setOutputDirState(null); setPreviewingVoiceId(null); }}
                     >
                       {previewingVoiceId === voice.id ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
                       {'Nghe thử'}
@@ -188,6 +264,20 @@ export function TtsStudioPanel() {
             </div>
           </div>
 
+          {generating && (
+            <div className="rounded-2xl border border-violet-500/20 bg-violet-500/10 p-4">
+              <div className="h-2 overflow-hidden rounded-full bg-slate-800">
+                <div className="h-full w-1/3 animate-pulse rounded-full bg-violet-400" style={{ width: '40%' }} />
+              </div>
+              <p className="mt-2 text-sm text-slate-300">
+                Đang tạo audio... ước tính khoảng {estimatedSeconds} giây
+              </p>
+              {text.trim().length > WARN_CHARS && (
+                <p className="mt-1 text-xs text-amber-400">Text dài, có thể mất 1-2 phút tùy mạng.</p>
+              )}
+            </div>
+          )}
+
           <button
             className="btn-primary w-full"
             disabled={!canGenerate}
@@ -200,13 +290,40 @@ export function TtsStudioPanel() {
             <div className="rounded-2xl border border-green-500/20 bg-green-500/10 p-4">
               <h4 className="mb-3 font-bold text-green-300">Tạo thành công</h4>
               <audio ref={audioRef} controls src={audioUrl} className="w-full" />
-              <a
-                href={audioUrl}
-                download={filename ?? 'tts_output.wav'}
-                className="btn-primary mt-3 inline-flex items-center gap-2"
-              >
-                <Download size={16} /> Tải file
-              </a>
+
+              <div className="mt-3 rounded-xl bg-slate-950/40 p-3 text-xs text-slate-400">
+                <div><b>File:</b> {filename}</div>
+                {outputDir && <div className="break-all"><b>Thư mục tạm:</b> {outputDir}</div>}
+              </div>
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                <a
+                  href={downloadUrl ?? audioUrl}
+                  download={filename ?? 'tts_output.wav'}
+                  className="btn-primary inline-flex items-center gap-2"
+                >
+                  <Download size={16} /> Tải file
+                </a>
+                {outputDir && (
+                  <button
+                    className="btn-secondary inline-flex items-center gap-2"
+                    onClick={async () => {
+                      try {
+                        await openOutputFolder(outputDir);
+                        toast.success('Đã mở thư mục tạm.');
+                      } catch (e) {
+                        toast.error(e instanceof Error ? e.message : 'Không mở được thư mục.');
+                      }
+                    }}
+                  >
+                    <FolderOpen size={16} /> Mở thư mục tạm
+                  </button>
+                )}
+              </div>
+
+              <p className="mt-2 text-xs text-slate-500">
+                Bấm Tải file để trình duyệt mở hộp thoại lưu file hoặc lưu vào Downloads tùy cấu hình.
+              </p>
             </div>
           )}
         </div>

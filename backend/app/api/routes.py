@@ -1413,10 +1413,12 @@ def delete_tts_clone(clone_id: str):
 
 
 @router.get("/tts/audio")
-def get_tts_audio(path: str = Query(...)):
+def get_tts_audio(path: str = Query(...), download: bool = Query(False)):
     file_path = _safe_path_under_any(path, [tts_clones_dir(), settings.temp_dir / "tts_voice_previews", tts_studio_outputs_dir()])
     if not file_path.is_file():
         raise HTTPException(status_code=404, detail="Audio không tồn tại.")
+    if download:
+        return FileResponse(file_path, filename=file_path.name, media_type="application/octet-stream")
     return FileResponse(file_path)
 
 
@@ -1441,6 +1443,7 @@ def generate_tts_audio(payload: TtsGenerateRequest):
             audio_path=str(path),
             audio_url=f"/api/tts/audio?path={quote(str(path))}",
             filename=path.name,
+            output_dir=str(path.parent),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

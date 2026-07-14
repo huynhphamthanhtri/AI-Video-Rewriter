@@ -238,14 +238,12 @@ $manifestContent = @{
     download_url          = "https://github.com/huynhphamthanhtri/MrTris_AUTO_RELEASES/releases/download/v$TargetVersion/$zipName"
     sha256                = $hash
     notes                 = @(
-        "v1.0.5 Full Update",
-        "New: Standalone Text to Speech (TTS Studio) tab - generate downloadable WAV/MP3",
-        "New: Support multiple languages and voices in TTS Studio",
-        "Fix: Reject overlapping SRT cues before voiceover rendering",
-        "Fix: Guarded tiny-overlap SRT auto-fix (<=0.5s, <=10%)",
-        "Safety: TTS voiceover overlap detection before audio mix",
-        "Improve: Gemini layered pipeline validation and prompt block architecture",
-        "Improve: Updated installer packaging and local update validation flow"
+        "v1.0.6 TTS Studio UX improvements",
+        "Fix: Download now forces Save As dialog via Content-Disposition attachment",
+        "Fix: TTS Studio state preserved when switching tabs away and back",
+        "New: Indeterminate progress bar with time estimate during generation",
+        "New: Mở thư mục tạm button to open temp folder with generated file",
+        "New: Show filename and temp folder path after successful generation"
     )
 }
 $Utf8NoBom = New-Object System.Text.UTF8Encoding $false

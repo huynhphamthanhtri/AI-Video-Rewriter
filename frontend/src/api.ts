@@ -371,8 +371,10 @@ export async function fetchTtsVoicePreview(voiceId: string, text: string): Promi
   return res.json();
 }
 
-export function ttsAudioUrl(path: string): string {
-  return `${API_BASE}/tts/audio?path=${encodeURIComponent(path)}`;
+export function ttsAudioUrl(path: string, download = false): string {
+  const params = new URLSearchParams({ path });
+  if (download) params.set('download', '1');
+  return `${API_BASE}/tts/audio?${params.toString()}`;
 }
 
 export async function generateStandaloneTts(payload: {
@@ -384,6 +386,7 @@ export async function generateStandaloneTts(payload: {
   audio_path: string;
   audio_url: string;
   filename: string;
+  output_dir: string;
 }> {
   const res = await fetch(`${API_BASE}/tts/generate`, {
     method: 'POST',

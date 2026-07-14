@@ -383,6 +383,7 @@ class TtsGenerateResponse(BaseModel):
     audio_path: str
     audio_url: str
     filename: str
+    output_dir: str
 
 
 class TtsClonePreviewRequest(BaseModel):
