@@ -328,7 +328,8 @@ export function App() {
 
   const [storageStats, setStorageStats] = useState<StorageStats | null>(null);
 
-
+  const [updateAvailable, setUpdateAvailable] = useState<UpdateCheckResponse | null>(null);
+  const updateToastShownRef = useRef(false);
 
   const [runtimeHealth, setRuntimeHealth] = useState<RuntimeHealth | null>(null);
 
@@ -365,6 +366,23 @@ export function App() {
 
   useEffect(() => { void loadSavedCookies(); void loadRenderPreferences(); void loadLicenseStatus(); void loadGeminiSessionStatus(); void fetchFinalVideosPath().then(setFinalVideosPath).catch(() => {}); }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    checkForUpdates()
+      .then(data => {
+        if (cancelled || !data.update_available) return;
+        setUpdateAvailable(data);
+        if (!updateToastShownRef.current) {
+          updateToastShownRef.current = true;
+          toast.info(`Có phiên bản mới ${data.remote_version}`, {
+            action: { label: 'Xem chi tiết', onClick: () => setActiveTab('maintenance') },
+            duration: 8000,
+          });
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   async function loadStorageStats() {
 
@@ -1186,7 +1204,7 @@ export function App() {
 
         <button className={activeTab === 'tts-studio' ? 'btn-primary' : 'btn-secondary'} onClick={() => setActiveTab('tts-studio')}>Text to Speech</button>
 
-        <button className={activeTab === 'maintenance' ? 'btn-primary' : 'btn-secondary'} onClick={() => { setActiveTab('maintenance'); void loadStorageStats(); void loadRuntimeHealth(); void loadLicenseStatus(); }}>Bảo trì</button>
+        <button className={`relative ${activeTab === 'maintenance' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => { setActiveTab('maintenance'); void loadStorageStats(); void loadRuntimeHealth(); void loadLicenseStatus(); }}>Bảo trì{updateAvailable && <span className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-[10px] font-bold text-white shadow-sm">!</span>}</button>
 
       </div>
 
@@ -1390,7 +1408,7 @@ function LicenseGate({ licenseStatus, onActivate, onRefresh }: { licenseStatus: 
 
         </div>
 
-      </div> : activeTab === 'blur' ? <div className="mx-auto max-w-7xl"><BlurTool reviewJob={renderStatus?.status === 'waiting_blur' ? renderStatus : null} onAfterReviewDecision={async () => { if (renderStatus?.job_id) setRenderStatus(await fetchRenderJob(renderStatus.job_id)); }}/></div> : activeTab === 'title' ? <div className="mx-auto max-w-7xl"><TitleTool renderOptions={renderOptions} jsonPayload={jsonPayload} onRenderOptionsChange={setRenderOptions}/></div> : activeTab === 'tts' ? <div className="mx-auto max-w-5xl"><TtsPanel renderOptions={renderOptions} onRenderOptionsChange={setRenderOptions}/></div> : activeTab === 'tts-studio' ? <div className="mx-auto max-w-5xl"><TtsStudioPanel /></div> : <div className="mx-auto max-w-5xl"><MaintenancePanel stats={storageStats} runtimeHealth={runtimeHealth} licenseStatus={licenseStatus} onRefresh={() => { void loadStorageStats(); void loadRuntimeHealth(); void loadLicenseStatus(); }} onCleanup={runFullCleanup} onActivateLicense={activateLicenseFromUi} onClearLicense={clearLicenseFromUi} onUnbindLicense={unbindLicenseFromUi}/></div>}
+      </div> : activeTab === 'blur' ? <div className="mx-auto max-w-7xl"><BlurTool reviewJob={renderStatus?.status === 'waiting_blur' ? renderStatus : null} onAfterReviewDecision={async () => { if (renderStatus?.job_id) setRenderStatus(await fetchRenderJob(renderStatus.job_id)); }}/></div> : activeTab === 'title' ? <div className="mx-auto max-w-7xl"><TitleTool renderOptions={renderOptions} jsonPayload={jsonPayload} onRenderOptionsChange={setRenderOptions}/></div> : activeTab === 'tts' ? <div className="mx-auto max-w-5xl"><TtsPanel renderOptions={renderOptions} onRenderOptionsChange={setRenderOptions}/></div> : activeTab === 'tts-studio' ? <div className="mx-auto max-w-5xl"><TtsStudioPanel /></div> : <div className="mx-auto max-w-5xl"><MaintenancePanel stats={storageStats} licenseStatus={licenseStatus} initialUpdateData={updateAvailable} onRefresh={() => { void loadStorageStats(); void loadLicenseStatus(); }} onCleanup={runFullCleanup} onActivateLicense={activateLicenseFromUi} onClearLicense={clearLicenseFromUi} onUnbindLicense={unbindLicenseFromUi}/></div>}
     </main>
 
   </div>;
@@ -1627,7 +1645,7 @@ function RenderResultPanel({ finalVideosPath }: { finalVideosPath: string | null
 
 }
 
-function MaintenancePanel({ stats, runtimeHealth, licenseStatus, onRefresh, onCleanup, onActivateLicense, onClearLicense, onUnbindLicense }: { stats: StorageStats | null; runtimeHealth: RuntimeHealth | null; licenseStatus: LicenseStatus | null; onRefresh: () => void; onCleanup: () => void; onActivateLicense: (licenseKey: string) => void; onClearLicense: () => void; onUnbindLicense: () => void }) {
+function MaintenancePanel({ stats, licenseStatus, initialUpdateData, onRefresh, onCleanup, onActivateLicense, onClearLicense, onUnbindLicense }: { stats: StorageStats | null; licenseStatus: LicenseStatus | null; initialUpdateData: UpdateCheckResponse | null; onRefresh: () => void; onCleanup: () => void; onActivateLicense: (licenseKey: string) => void; onClearLicense: () => void; onUnbindLicense: () => void }) {
   const [licenseKey, setLicenseKey] = useState('');
 
   const [updateState, setUpdateState] = useState<'idle' | 'checking' | 'up_to_date' | 'available' | 'error'>('idle');
@@ -1639,6 +1657,13 @@ function MaintenancePanel({ stats, runtimeHealth, licenseStatus, onRefresh, onCl
   const [launched, setLaunched] = useState(false);
 
   const [showUpdateConfirm, setShowUpdateConfirm] = useState(false);
+
+  useEffect(() => {
+    if (initialUpdateData && updateState === 'idle') {
+      setUpdateData(initialUpdateData);
+      setUpdateState('available');
+    }
+  }, [initialUpdateData, updateState]);
 
   const handleCheckUpdate = async () => {
 
@@ -1684,41 +1709,21 @@ function MaintenancePanel({ stats, runtimeHealth, licenseStatus, onRefresh, onCl
 
   };
 
-  const copyHardwareId = async () => {
-
-    if (!licenseStatus?.hardware_id) return;
-
-    await navigator.clipboard.writeText(licenseStatus.hardware_id);
-
-    toast.success('Đã copy Hardware ID.');
-
-  };
 
   return <Card><SectionTitle icon={Trash2} title="Bảo trì" desc="Theo dõi dung lượng và dọn dẹp project"/>
 
     <div className="mb-5 rounded-2xl border border-cyan-500/20 bg-cyan-500/10 p-4">
 
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 className="flex items-center gap-2 font-bold"><KeyRound size={18}/>License</h3><button className="btn-mini" onClick={onRefresh}>Refresh</button></div>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 className="flex items-center gap-2 font-bold"><KeyRound size={18}/>License</h3><button className="btn-mini" onClick={onRefresh}>Làm mới</button></div>
 
-      <div className="grid gap-3 md:grid-cols-4"><Stat label="Status" value={licenseStatus?.status ?? 'N/A'}/><Stat label="Plan" value={licenseStatus?.plan ?? 'N/A'}/><Stat label="Enforcement" value={licenseStatus?.enforcement ? 'ON' : 'OFF'}/><Stat label="Expires" value={licenseStatus?.expires_at ? new Date(licenseStatus.expires_at).toLocaleString() : licenseStatus?.plan === 'lifetime' ? 'Lifetime' : 'N/A'}/></div>
+      <div className="grid gap-3 md:grid-cols-4"><Stat label="Trạng thái" value={licenseStatus?.status ?? 'N/A'}/><Stat label="Gói" value={licenseStatus?.plan ?? 'N/A'}/><Stat label="Áp dụng" value={licenseStatus?.enforcement ? 'ON' : 'OFF'}/><Stat label="Hết hạn" value={licenseStatus?.expires_at ? new Date(licenseStatus.expires_at).toLocaleString() : licenseStatus?.plan === 'lifetime' ? 'Vĩnh viễn' : 'N/A'}/></div>
 
       <p className="mt-3 text-sm text-slate-200">{licenseStatus?.message ?? 'Chưa tải trạng thái license.'}</p>
       {licenseStatus?.cache_status === 'offline' && <p className="mt-2 text-sm text-amber-300">Đang dùng cache license offline. Hãy kết nối mạng trong vòng 2 ngày để xác thực lại.</p>}
-      <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-white/10 bg-slate-950/40 p-3 text-sm"><span className="text-slate-400">Hardware ID:</span><b className="tracking-widest text-cyan-100">{licenseStatus?.hardware_id ?? 'N/A'}</b><button className="btn-mini" onClick={copyHardwareId}><Copy size={14}/>Copy</button></div>
 
-      {licenseStatus?.customer_name && <p className="mt-2 text-xs text-slate-400">Customer: {licenseStatus.customer_name} {licenseStatus.customer_email ? `(${licenseStatus.customer_email})` : ''}</p>}
+      {licenseStatus?.customer_name && <p className="mt-2 text-xs text-slate-400">Khách hàng: {licenseStatus.customer_name} {licenseStatus.customer_email ? `(${licenseStatus.customer_email})` : ''}</p>}
 
-      <div className="mt-4 grid gap-3"><label className="label">Paste license key</label><textarea className="textarea min-h-[96px]" placeholder="Nhập license key, ví dụ TESTADMIN1" value={licenseKey} onChange={e => setLicenseKey(e.target.value)}/><div className="flex flex-wrap gap-2"><button className="btn-primary" onClick={() => onActivateLicense(licenseKey)} disabled={!licenseKey.trim()}>Activate</button><button className="btn-secondary" onClick={() => setLicenseKey('')}>Clear input</button><button className="btn-secondary" disabled={!licenseStatus?.licensed} onClick={onUnbindLicense}>Unbind device</button><button className="btn-secondary" onClick={() => { if (confirm('Xóa license local trên máy này?')) onClearLicense(); }}>Xóa license local</button></div></div>
-    </div>
-
-    <div className="mb-5 rounded-2xl border border-white/10 bg-slate-950/40 p-4">
-
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 className="font-bold">Runtime Health</h3><button className="btn-mini" onClick={onRefresh}>Refresh</button></div>
-
-      <div className="grid gap-3 md:grid-cols-4"><Stat label="Backend PID" value={`${runtimeHealth?.pid ?? 'N/A'}`}/><Stat label="Started" value={runtimeHealth?.backend_started_at ? new Date(runtimeHealth.backend_started_at * 1000).toLocaleTimeString() : 'N/A'}/><Stat label="TTS" value={runtimeHealth?.tts_status?.status ?? 'N/A'}/><Stat label="Encoder" value={runtimeHealth?.video_encoder_auto_result?.label ?? runtimeHealth?.video_encoder_auto_result?.error ?? 'N/A'}/></div>
-
-      <p className="mt-3 break-all text-xs text-slate-500">Python: {runtimeHealth?.python_executable ?? 'N/A'}</p>
-
+      <div className="mt-4 grid gap-3"><label className="label">Nhập license key</label><textarea className="textarea min-h-[96px]" placeholder="Nhập license key, ví dụ TESTADMIN1" value={licenseKey} onChange={e => setLicenseKey(e.target.value)}/><div className="flex flex-wrap gap-2"><button className="btn-primary" onClick={() => onActivateLicense(licenseKey)} disabled={!licenseKey.trim()}>Kích hoạt</button><button className="btn-secondary" onClick={() => setLicenseKey('')}>Xóa nội dung</button><button className="btn-secondary" disabled={!licenseStatus?.licensed} onClick={onUnbindLicense}>Gỡ liên kết thiết bị</button><button className="btn-secondary" onClick={() => { if (confirm('Xóa license trên máy này?')) onClearLicense(); }}>Xóa license trên máy</button></div></div>
     </div>
 
     <div className="mb-5 rounded-2xl border border-white/10 bg-slate-950/40 p-4">

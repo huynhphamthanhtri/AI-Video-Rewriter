@@ -27,7 +27,7 @@ MIN_CPS_CHECK_DURATION = 3.0
 
 TTS_PREVIEWS_DIR = settings.temp_dir / "tts_voice_previews"
 TTS_STUDIO_OUTPUTS_DIR = settings.temp_dir / "tts_studio_outputs"
-TTS_STUDIO_MAX_CHARS = 10000
+TTS_STUDIO_MAX_CHARS = 30000
 ALLOWED_STUDIO_FORMATS = frozenset({"wav", "mp3"})
 TTS_OVERLAP_HARD_FAIL_SECONDS = 0.25
 TTS_MIN_CUE_GAP_SECONDS = 0.05

@@ -16,8 +16,8 @@ const LOCALE_LABELS: Record<string, string> = {
 
 const LOCALE_ORDER = ['vi-VN', 'en-US', 'ko-KR', 'ja-JP', 'de-DE', 'es-MX'];
 
-const WARN_CHARS = 5000;
-const MAX_CHARS = 10000;
+const MAX_CHARS = 30000;
+const WARN_CHARS = Math.floor(MAX_CHARS / 2);
 
 type TtsStudioSessionState = {
   selectedLocale: string;
