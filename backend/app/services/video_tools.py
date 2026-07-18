@@ -150,6 +150,76 @@ NVENC_PRESETS = {
 }
 
 
+def write_playwright_storage_cookies_to_netscape(
+    storage_state_path: Path,
+    output_path: Path,
+) -> CookieHealth:
+    """Convert Playwright storage_state JSON to Netscape-format cookies.txt.
+
+    Reads the JSON produced by context.storage_state(), filters for
+    YouTube/Google auth domains, writes Netscape format, and validates
+    with analyze_ytdlp_cookie_file(). Returns CookieHealth of written file.
+    """
+    if not storage_state_path.exists():
+        return CookieHealth(
+            valid=False,
+            errors=[f"storage_state not found: {storage_state_path}"],
+            warnings=[], total_cookies=0, youtube_cookies=0,
+            auth_cookies=0, has_strong_auth=False, expired_cookies=0,
+        )
+
+    try:
+        data = json.loads(storage_state_path.read_text(encoding="utf-8", errors="replace"))
+    except Exception as exc:
+        return CookieHealth(
+            valid=False, errors=[f"Failed to parse storage_state: {exc}"],
+            warnings=[], total_cookies=0, youtube_cookies=0,
+            auth_cookies=0, has_strong_auth=False, expired_cookies=0,
+        )
+
+    cookies = data.get("cookies", [])
+    if not cookies:
+        return CookieHealth(
+            valid=False, errors=["No cookies in storage_state"],
+            warnings=[], total_cookies=0, youtube_cookies=0,
+            auth_cookies=0, has_strong_auth=False, expired_cookies=0,
+        )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "# Netscape HTTP Cookie File",
+        "# Auto-generated from Playwright storage_state on " + time.strftime("%Y-%m-%d %H:%M:%S"),
+    ]
+    written = 0
+    for c in cookies:
+        domain = c.get("domain", "")
+        if not any(domain == d or domain.endswith("." + d.lstrip(".")) for d in YOUTUBE_COOKIE_DOMAINS):
+            continue
+        include_subdomains = "TRUE" if domain.startswith(".") else "FALSE"
+        path = c.get("path", "/")
+        secure = "TRUE" if c.get("secure", False) else "FALSE"
+        expires = c.get("expires", 0)
+        if isinstance(expires, (int, float)):
+            expires = int(expires)
+        else:
+            expires = 0
+        name = c.get("name", "")
+        value = c.get("value", "")
+        line = f"{domain}\t{include_subdomains}\t{path}\t{secure}\t{expires}\t{name}\t{value}"
+        lines.append(line)
+        written += 1
+
+    if written == 0:
+        return CookieHealth(
+            valid=False, errors=["No YouTube/Google cookies in storage_state"],
+            warnings=[], total_cookies=0, youtube_cookies=0,
+            auth_cookies=0, has_strong_auth=False, expired_cookies=0,
+        )
+
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return analyze_ytdlp_cookie_file(output_path)
+
+
 def ui_safe_error(text: str, max_len: int = 500) -> str:
     lines = text.split("\n")
     safe_lines: list[str] = []
@@ -687,9 +757,9 @@ def _apply_segment_plan_to_payload(payload: GeminiPayloadSchema, segment_plans: 
             continue
 
         # Compute scale for internal cue timing (compression/expansion)
-        if p.decision == "sync_video_hard_trim":
-            # Hard trim: total compression = required_duration / orig_dur
-            # (video_speed alone is insufficient: e.g. speed=1.15 + trim from 10→4.75)
+        if p.decision in ("sync_video_hard_trim", "sync_video_soft_trim"):
+            # Both hard and soft trim change final duration beyond video speed alone:
+            # scale internal cue timing by the actual required_duration / orig_dur
             internal_scale = final_dur / max(orig_dur, 0.001)
         elif video_speed != 1.0:
             internal_scale = 1.0 / video_speed
@@ -800,6 +870,12 @@ class VideoDownloader:
             output_path.unlink()
         format_selector = "bestvideo[vcodec^=avc1][height<=1080]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1]+bestaudio/best[ext=mp4]/best" if settings.ytdlp_prefer_h264 else "bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best[ext=mp4]/best"
         effective_cookies_file = cookies_file or settings.ytdlp_cookies_file
+        if not effective_cookies_file:
+            saved = Path(settings.outputs_dir).parent / "data" / "cookies" / "cookies.txt"
+            if saved.exists():
+                health = analyze_ytdlp_cookie_file(saved)
+                if health.valid:
+                    effective_cookies_file = str(saved)
         effective_cookies_from_browser = cookies_from_browser or self._browser_cookie_source_from_profile(user_data_dir) or settings.ytdlp_cookies_from_browser
         auth_candidates: list[tuple[str, str | None]] = []
         cookie_file_has_strong_auth = False
@@ -1065,7 +1141,7 @@ class VideoCutter:
             p = plan_by_seg.get(segment.segment_id)
             video_speed = p.video_speed_factor if p else 1.0
 
-            if p and p.decision == "sync_video_hard_trim":
+            if p and p.decision in ("sync_video_hard_trim", "sync_video_soft_trim"):
                 trim_input = p.required_duration * p.video_speed_factor
                 duration = min(duration, trim_input)
 
@@ -1442,6 +1518,81 @@ class TitleOverlay:
         return output_path
 
 
+# ── Trailing TTS dead air trim ──
+TRAILING_DEAD_AIR_TRIM_THRESHOLD = 6.0
+TRAILING_DEAD_AIR_TARGET_PADDING = 1.5
+
+
+def _trim_tts_trailing_dead_air_if_needed(
+    video_path: Path,
+    voiceover_path: Path | None,
+    output_path: Path,
+    options: RenderOptions,
+    encoder_profile: EncoderProfile,
+    cancel_callback: CancelCallback | None = None,
+    voice_end_seconds: float | None = None,
+) -> tuple[Path, dict[str, object]]:
+    """Trim trailing video dead air after voiceover ends.
+
+    If video_duration - voiceover_duration > TRAILING_DEAD_AIR_TRIM_THRESHOLD,
+    trim the video to voiceover_duration + TRAILING_DEAD_AIR_TARGET_PADDING.
+    Returns (final_video_path, diagnostic_dict).
+    """
+    if not voiceover_path or not voiceover_path.exists():
+        return video_path, {"applied": False, "reason": "missing_voiceover_path"}
+
+    from app.services.tts_tools import probe_audio_duration, probe_media_duration
+
+    video_duration = probe_media_duration(video_path)
+    audio_duration = probe_audio_duration(voiceover_path)
+    voice_duration = voice_end_seconds if voice_end_seconds is not None else audio_duration
+    tail = video_duration - voice_duration
+
+    if tail <= TRAILING_DEAD_AIR_TRIM_THRESHOLD:
+        return video_path, {
+            "applied": False,
+            "reason": "tail_within_threshold",
+            "video_duration_before": round(video_duration, 3),
+            "voiceover_duration": round(voice_duration, 3),
+            "voiceover_file_duration": round(audio_duration, 3),
+            "tail_seconds": round(tail, 3),
+        }
+
+    target_duration = voice_duration + TRAILING_DEAD_AIR_TARGET_PADDING
+
+    def build_trim_cmd(profile: EncoderProfile) -> list[str]:
+        return [
+            settings.ffmpeg_binary, "-y",
+            "-i", str(video_path),
+            "-t", f"{target_duration:.3f}",
+            *video_encoder_args(profile, options.render_quality),
+            "-c:a", "copy",
+            "-movflags", "+faststart",
+            str(output_path),
+        ]
+
+    run_ffmpeg_with_encoder_fallback(
+        build_trim_cmd,
+        "Trailing TTS dead air trim thất bại",
+        mode_override=options.video_encoder,
+        duration_seconds=target_duration,
+        cancel_callback=cancel_callback,
+    )
+
+    if output_path.exists():
+        video_path.unlink(missing_ok=True)
+        shutil.move(str(output_path), str(video_path))
+
+    return video_path, {
+        "applied": True,
+        "video_duration_before": round(video_duration, 3),
+        "voiceover_duration": round(voice_duration, 3),
+        "voiceover_file_duration": round(audio_duration, 3),
+        "tail_seconds": round(tail, 3),
+        "target_duration": round(target_duration, 3),
+    }
+
+
 class RenderPipeline:
     def __init__(self, downloader: VideoDownloader, cutter: VideoCutter, concatenator: VideoConcatenator, subtitle_burner: SubtitleBurner, output_transformer: OutputTransformer | None = None, title_overlay: TitleOverlay | None = None):
         self.downloader = downloader
@@ -1695,6 +1846,7 @@ class RenderPipeline:
         subtitle_input_video = rough_video
         final_burned_by_transform = False
         tts_result: dict[str, str] = {}
+        tts_trailing_trim_diag: dict[str, object] = {}
         title_enabled = self.title_overlay.enabled(options)
         if needs_transform and effective_subtitle_mode == "burn" and options.blur_mode != "review" and options.tts_mode != "voiceover" and not title_enabled and hasattr(self.output_transformer, "transform_and_burn"):
             if progress_callback:
@@ -1767,6 +1919,19 @@ class RenderPipeline:
             mark_timing("tts_mix_voiceover", step_started)
             if progress_callback:
                 progress_callback({"step": "TTS voiceover", "message": "Đã mix voiceover vào video.", "progress": 94, "phase": "tts_mix", "phase_progress": 1.0})
+
+            # ── Trailing TTS dead air trim ──
+            patch_path = output_dir / f"{prefix}_trailing_trim_patch.mp4"
+            tts_mixed_video, tts_trailing_trim_diag = _trim_tts_trailing_dead_air_if_needed(
+                tts_mixed_video,
+                Path(tts_result["voiceover_path"]),
+                patch_path,
+                options,
+                encoder_profile=selected_encoder,
+                cancel_callback=cancel_callback,
+                voice_end_seconds=max((srt_timestamp_to_seconds(cue.end) for cue in payload.srt), default=None),
+            )
+
             subtitle_input_video = tts_mixed_video
             final_burned_by_transform = False
 
@@ -1834,6 +1999,8 @@ class RenderPipeline:
         render_plan_payload["source_files"] = {source_id: str(path) for source_id, path in source_paths.items()}
         if tts_result:
             render_plan_payload["tts"] = tts_result
+        if tts_trailing_trim_diag:
+            render_plan_payload["tts_trailing_trim"] = tts_trailing_trim_diag
         if title_result:
             render_plan_payload["title_overlay"] = title_result
         if tts_segment_plans:

@@ -124,7 +124,6 @@ class VideoSegmentSchema(BaseModel):
     subtitle_start: int = Field(ge=1)
     subtitle_end: int = Field(ge=1)
     scene_description: str
-    importance_score: int = Field(ge=0, le=100)
     freeze_frame_duration: float | None = None
 
     @model_validator(mode="after")
@@ -223,8 +222,10 @@ class GeminiPayloadSchema(BaseModel):
             video_duration = segment.duration_seconds
             if abs(video_duration - subtitle_duration) > MAX_SEGMENT_DURATION_DELTA_SECONDS:
                 raise ValueError(
-                    f"Segment #{segment.segment_id} có thời lượng {video_duration:.1f} giây "
-                    f"nhưng subtitle tương ứng chỉ dài {subtitle_duration:.1f} giây."
+                    f"Segment #{segment.segment_id} lệch timing: video={video_duration:.1f}s, "
+                    f"subtitle={subtitle_duration:.1f}s, diff={abs(video_duration - subtitle_duration):.1f}s "
+                    f"(giới hạn {MAX_SEGMENT_DURATION_DELTA_SECONDS:.0f}s). "
+                    f"Auto-fix không thể đồng bộ đoạn này; hãy kiểm tra source_start/source_end hoặc chia nhỏ segment."
                 )
 
         return self

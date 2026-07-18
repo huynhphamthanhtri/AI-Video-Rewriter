@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 import uuid
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
+from app.core.config import settings
 from app.schemas.batch import BatchItemProgress, BatchProgress
 from app.schemas.prompt import PromptGenerateRequest
 from app.services.gemini_automation import GeminiAutomationService, gemini_service
@@ -23,6 +26,7 @@ class BatchPipelineService:
         automation_service: GeminiAutomationService | None = None,
         render_status_getter: RenderStatusGetter | None = None,
         sleep_fn: SleepFn | None = None,
+        storage_path: Path | None = None,
     ) -> None:
         self.automation_service = automation_service or gemini_service
         self.render_status_getter = render_status_getter
@@ -31,6 +35,59 @@ class BatchPipelineService:
         self._tasks: dict[str, asyncio.Task] = {}
         self._cancel_requested: set[str] = set()
         self._cancel_render_fn: Callable[[str], None] | None = None
+        self.storage_path = storage_path
+        if self.storage_path is None and automation_service is None:
+            self.storage_path = settings.gemini_session_path.parent / "batch_queue.json"
+        self._run_configs: dict[str, dict] = {}
+        self._load_persisted()
+
+    def _load_persisted(self) -> None:
+        if self.storage_path is None or not self.storage_path.exists():
+            return
+        try:
+            payload = json.loads(self.storage_path.read_text(encoding="utf-8"))
+            for record in payload.get("batches", []):
+                batch = BatchProgress.model_validate(record["progress"])
+                if batch.status in {"pending", "running"}:
+                    for item in batch.items:
+                        if item.status == "running":
+                            item.status = "error"
+                            item.error = "Backend restarted while this item was running. Item marked failed; continuing the queue."
+                            item.ended_at = time.time()
+                    batch.status = "pending" if any(item.status == "pending" for item in batch.items) else "error"
+                self._batches[batch.batch_id] = batch
+                self._run_configs[batch.batch_id] = record.get("config") or {}
+        except Exception:
+            self._batches.clear()
+            self._run_configs.clear()
+
+    def _persist(self) -> None:
+        if self.storage_path is None:
+            return
+        self.storage_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": 1,
+            "batches": [
+                {"progress": batch.model_dump(mode="json"), "config": self._run_configs.get(batch_id, {})}
+                for batch_id, batch in self._batches.items()
+            ],
+        }
+        temp_path = self.storage_path.with_suffix(self.storage_path.suffix + ".tmp")
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp_path.replace(self.storage_path)
+
+    def resume_pending(self) -> None:
+        for batch_id, batch in self._batches.items():
+            if batch.status != "pending" or batch_id in self._tasks:
+                continue
+            config = self._run_configs.get(batch_id) or {}
+            if not config:
+                batch.status = "error"
+                batch.error = "Persisted queue is missing its run configuration."
+                batch.ended_at = time.time()
+                continue
+            self._tasks[batch_id] = asyncio.create_task(self._run_batch(batch_id=batch_id, **config))
+        self._persist()
 
     def set_render_status_getter(self, getter: RenderStatusGetter) -> None:
         self.render_status_getter = getter
@@ -50,7 +107,6 @@ class BatchPipelineService:
         user_data_dir: str | None = None,
         headless: bool | None = None,
         gemini_thinking_mode: str = "extended",
-        gemini_analysis_mode: str = "deep_analysis",
     ) -> BatchProgress:
         urls = self._extract_urls(form_data)
         batch_id = str(uuid.uuid4())
@@ -61,19 +117,23 @@ class BatchPipelineService:
             items=[BatchItemProgress(index=index, source_url=url) for index, url in enumerate(urls)],
         )
         self._batches[batch_id] = batch
+        run_config = {
+            "form_data": form_data,
+            "render_options": render_options,
+            "subtitle_mode": subtitle_mode,
+            "ytdlp_cookies_file": ytdlp_cookies_file,
+            "ytdlp_cookies_from_browser": ytdlp_cookies_from_browser,
+            "local_video_path": local_video_path,
+            "user_data_dir": user_data_dir,
+            "headless": headless,
+            "gemini_thinking_mode": gemini_thinking_mode,
+        }
+        self._run_configs[batch_id] = run_config
+        self._persist()
         self._tasks[batch_id] = asyncio.create_task(
             self._run_batch(
                 batch_id=batch_id,
-                form_data=form_data,
-                render_options=render_options,
-                subtitle_mode=subtitle_mode,
-                ytdlp_cookies_file=ytdlp_cookies_file,
-                ytdlp_cookies_from_browser=ytdlp_cookies_from_browser,
-                local_video_path=local_video_path,
-                user_data_dir=user_data_dir,
-                headless=headless,
-                gemini_thinking_mode=gemini_thinking_mode,
-                gemini_analysis_mode=gemini_analysis_mode,
+                **run_config,
             )
         )
         return batch
@@ -102,6 +162,7 @@ class BatchPipelineService:
                         self._cancel_render_fn(item.job_id)
                     except Exception:
                         pass
+        self._persist()
         return True
 
     def _extract_urls(self, form_data: dict) -> list[str]:
@@ -133,13 +194,14 @@ class BatchPipelineService:
         user_data_dir: str | None,
         headless: bool | None = None,
         gemini_thinking_mode: str = "extended",
-        gemini_analysis_mode: str = "deep_analysis",
     ) -> None:
         batch = self._batches[batch_id]
         batch.status = "running"
         batch.started_at = time.time()
         try:
             for item in batch.items:
+                if item.status in {"done", "error", "cancelled"}:
+                    continue
                 if batch_id in self._cancel_requested:
                     self._mark_remaining_cancelled(batch, item.index)
                     return
@@ -156,9 +218,10 @@ class BatchPipelineService:
                     user_data_dir=user_data_dir,
                     headless=headless,
                     gemini_thinking_mode=gemini_thinking_mode,
-                    gemini_analysis_mode=gemini_analysis_mode,
                 )
+                self._persist()
             self._finish_batch(batch)
+            self._persist()
         except Exception as exc:  # noqa: BLE001
             batch.status = "error"
             msg = ui_safe_error(str(exc))
@@ -166,6 +229,7 @@ class BatchPipelineService:
                 msg = f"{type(exc).__name__}: lỗi nội bộ khi xử lý batch pipeline."
             batch.error = msg
             batch.ended_at = time.time()
+            self._persist()
 
     async def _run_item(
         self,
@@ -181,10 +245,10 @@ class BatchPipelineService:
         user_data_dir: str | None,
         headless: bool | None = None,
         gemini_thinking_mode: str = "extended",
-        gemini_analysis_mode: str = "deep_analysis",
     ) -> None:
         item.status = "running"
         item.started_at = time.time()
+        self._persist()
         try:
             item_form = dict(form_data)
             item_form["youtube_url"] = item.source_url
@@ -207,10 +271,10 @@ class BatchPipelineService:
             }
             task_id = str(uuid.uuid4())
             task = self.automation_service.start(task_id, prompt, render_payload, user_data_dir, headless=headless,
-                                                     thinking_mode=gemini_thinking_mode,
-                                                     analysis_mode=gemini_analysis_mode,
-                                                     form_data=item_form)
+                                                      thinking_mode=gemini_thinking_mode,
+                                                      form_data=item_form)
             item.task_id = task_id
+            self._persist()
 
             while task.status == "running":
                 if batch.batch_id in self._cancel_requested:
@@ -235,6 +299,7 @@ class BatchPipelineService:
 
             item.result = task.result
             item.job_id = str((task.result or {}).get("job_id") or "") or None
+            self._persist()
             if not item.job_id:
                 item.status = "error"
                 item.error = "Auto pipeline did not return render job_id."

@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 MAX_RAW_CUE_DURATION = 12.0
 CHARS_PER_SEC_THRESHOLD = 8.0
 MIN_CPS_CHECK_DURATION = 3.0
+EDGE_TTS_REQUEST_TIMEOUT_SECONDS = 45.0
 
 TTS_PREVIEWS_DIR = settings.temp_dir / "tts_voice_previews"
 TTS_STUDIO_OUTPUTS_DIR = settings.temp_dir / "tts_studio_outputs"
@@ -31,8 +32,13 @@ TTS_STUDIO_MAX_CHARS = 30000
 ALLOWED_STUDIO_FORMATS = frozenset({"wav", "mp3"})
 TTS_OVERLAP_HARD_FAIL_SECONDS = 0.25
 TTS_MIN_CUE_GAP_SECONDS = 0.05
-TTS_MAX_PAIR_AUTO_SHIFT_SECONDS = 2.0
-TTS_MAX_TOTAL_AUTO_SHIFT_SECONDS = 5.0
+TTS_MAX_PAIR_AUTO_SHIFT_SECONDS = 10.0
+TTS_MAX_PAIR_AUTO_SHIFT_RATIO = 0.005
+TTS_MAX_PAIR_AUTO_SHIFT_HARD_CAP_SECONDS = 10.0
+TTS_MAX_TOTAL_AUTO_SHIFT_SECONDS = 10.0
+TTS_SHIFT_COMPARISON_TOLERANCE_SECONDS = 0.1
+TTS_MAX_TOTAL_AUTO_SHIFT_RATIO = 0.052
+TTS_MAX_TOTAL_AUTO_SHIFT_HARD_CAP_SECONDS = 30.0
 
 EDGE_TTS_VOICES = [
     {"id": "vi-VN-HoaiMyNeural", "label": "HoaiMy", "description": "Vietnamese female neural voice", "gender": "female", "languages": ["vi"], "locale": "vi-VN", "rank": 1, "best_for": "Vietnamese"},
@@ -189,7 +195,7 @@ def _run(cmd: list[str]) -> None:
         raise RuntimeError(detail or f"Lệnh thất bại: {' '.join(cmd)}") from exc
 
 
-def _run_async(coro: Coroutine[Any, Any, Any]) -> Any:
+def _run_async(coro: Coroutine[Any, Any, Any], timeout: float | None = None) -> Any:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -205,7 +211,9 @@ def _run_async(coro: Coroutine[Any, Any, Any]) -> Any:
 
     thread = threading.Thread(target=runner, daemon=True)
     thread.start()
-    thread.join()
+    thread.join(timeout=timeout)
+    if thread.is_alive():
+        raise TimeoutError(f"Async operation timed out after {timeout:.1f}s.")
     if "error" in result:
         raise result["error"]
     return result.get("value")
@@ -300,7 +308,10 @@ class EdgeTtsSynthesizer:
                 await communicate.save(str(temp_media))
 
             try:
-                _run_async(save_media())
+                # Edge TTS can leave a websocket open indefinitely when the
+                # service stops sending audio. Bound each cue so one stalled
+                # request is retried/fails instead of blocking the whole queue.
+                _run_async(asyncio.wait_for(save_media(), timeout=EDGE_TTS_REQUEST_TIMEOUT_SECONDS), timeout=EDGE_TTS_REQUEST_TIMEOUT_SECONDS + 2)
                 if not temp_media.exists() or temp_media.stat().st_size == 0:
                     raise RuntimeError("Edge TTS tạo file âm thanh rỗng.")
                 _run([settings.ffmpeg_binary, "-y", "-i", str(temp_media), "-ar", "48000", "-ac", "2", str(output_path)])
@@ -537,6 +548,18 @@ class TtsVoiceoverService:
     def reconcile_payload_tts_timeline(payload: GeminiPayloadSchema, plans: list[TtsCuePlan], output_dir: Path | None = None) -> dict:
         sorted_plans = sorted(plans, key=lambda p: p.start_seconds)
         srt_by_index = {item.index: item for item in payload.srt}
+        timeline_duration = max(
+            (srt_timestamp_to_seconds(item.end) for item in payload.srt),
+            default=0.0,
+        )
+        max_total_shift = min(
+            TTS_MAX_TOTAL_AUTO_SHIFT_HARD_CAP_SECONDS,
+            max(TTS_MAX_TOTAL_AUTO_SHIFT_SECONDS, timeline_duration * TTS_MAX_TOTAL_AUTO_SHIFT_RATIO),
+        )
+        max_pair_shift = min(
+            TTS_MAX_PAIR_AUTO_SHIFT_HARD_CAP_SECONDS,
+            max(TTS_MAX_PAIR_AUTO_SHIFT_SECONDS, timeline_duration * TTS_MAX_PAIR_AUTO_SHIFT_RATIO),
+        )
 
         carry_shift = 0.0
         total_shift = 0.0
@@ -557,17 +580,18 @@ class TtsVoiceoverService:
                 new_start + plan.final_duration,
             )
 
-            if new_start < previous_end + TTS_MIN_CUE_GAP_SECONDS:
+            if new_start < previous_end:
                 needed_shift = (previous_end + TTS_MIN_CUE_GAP_SECONDS) - new_start
-                if needed_shift > TTS_MAX_PAIR_AUTO_SHIFT_SECONDS:
+                if needed_shift > max_pair_shift:
                     fail_report = {
                         "applied": False,
                         "failed": True,
                         "failure_code": "TTS_TIMING_RECONCILE_FAILED",
                         "failed_cue_index": plan.index,
                         "required_shift_seconds": round(needed_shift, 3),
-                        "max_pair_auto_shift_seconds": TTS_MAX_PAIR_AUTO_SHIFT_SECONDS,
-                        "max_total_auto_shift_seconds": TTS_MAX_TOTAL_AUTO_SHIFT_SECONDS,
+                        "max_pair_auto_shift_seconds": round(max_pair_shift, 3),
+                        "max_total_auto_shift_seconds": round(max_total_shift, 3),
+                        "timeline_duration_seconds": round(timeline_duration, 3),
                         "total_shift_before_failure_seconds": round(total_shift, 3),
                         "previous_end_seconds": round(previous_end, 3),
                         "original_start_seconds": round(orig_start, 3),
@@ -578,9 +602,9 @@ class TtsVoiceoverService:
                     TtsVoiceoverService._write_reconciliation_failure(output_dir, fail_report)
                     raise RuntimeError(
                         f"TTS_TIMING_RECONCILE_FAILED: cue {plan.index} requires "
-                        f"{needed_shift:.3f}s shift but max pair is {TTS_MAX_PAIR_AUTO_SHIFT_SECONDS}s."
+                        f"{needed_shift:.3f}s shift but max pair is {max_pair_shift:.3f}s."
                     )
-                if total_shift + needed_shift > TTS_MAX_TOTAL_AUTO_SHIFT_SECONDS:
+                if total_shift + needed_shift > max_total_shift + TTS_SHIFT_COMPARISON_TOLERANCE_SECONDS:
                     fail_report = {
                         "applied": False,
                         "failed": True,
@@ -588,8 +612,9 @@ class TtsVoiceoverService:
                         "failed_cue_index": plan.index,
                         "required_shift_seconds": round(needed_shift, 3),
                         "candidate_total_shift_seconds": round(total_shift + needed_shift, 3),
-                        "max_pair_auto_shift_seconds": TTS_MAX_PAIR_AUTO_SHIFT_SECONDS,
-                        "max_total_auto_shift_seconds": TTS_MAX_TOTAL_AUTO_SHIFT_SECONDS,
+                        "max_pair_auto_shift_seconds": round(max_pair_shift, 3),
+                        "max_total_auto_shift_seconds": round(max_total_shift, 3),
+                        "timeline_duration_seconds": round(timeline_duration, 3),
                         "total_shift_before_failure_seconds": round(total_shift, 3),
                         "previous_end_seconds": round(previous_end, 3),
                         "original_start_seconds": round(orig_start, 3),
@@ -600,7 +625,7 @@ class TtsVoiceoverService:
                     TtsVoiceoverService._write_reconciliation_failure(output_dir, fail_report)
                     raise RuntimeError(
                         f"TTS_TIMING_RECONCILE_TOTAL_TOO_LARGE: total shift "
-                        f"{total_shift + needed_shift:.3f}s exceeds {TTS_MAX_TOTAL_AUTO_SHIFT_SECONDS}s."
+                        f"{total_shift + needed_shift:.3f}s exceeds {max_total_shift:.3f}s."
                     )
 
                 carry_shift += needed_shift
@@ -610,7 +635,7 @@ class TtsVoiceoverService:
                 adjustments.append({
                     "cue_index": plan.index,
                     "shift_seconds": round(needed_shift, 3),
-                    "reason": "previous cue final audio required more space",
+                    "reason": "previous cue final audio required natural gap",
                 })
 
             cue.start = seconds_to_srt_timestamp(new_start)
@@ -621,8 +646,9 @@ class TtsVoiceoverService:
             "applied": len(adjustments) > 0,
             "failed": False,
             "min_gap_seconds": TTS_MIN_CUE_GAP_SECONDS,
-            "max_pair_auto_shift_seconds": TTS_MAX_PAIR_AUTO_SHIFT_SECONDS,
-            "max_total_auto_shift_seconds": TTS_MAX_TOTAL_AUTO_SHIFT_SECONDS,
+            "max_pair_auto_shift_seconds": round(max_pair_shift, 3),
+            "max_total_auto_shift_seconds": round(max_total_shift, 3),
+            "timeline_duration_seconds": round(timeline_duration, 3),
             "total_shift_seconds": round(total_shift, 3),
             "adjustments": adjustments,
         }

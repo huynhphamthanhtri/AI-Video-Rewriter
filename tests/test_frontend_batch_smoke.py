@@ -33,14 +33,14 @@ def test_frontend_batch_panel_and_cancel_are_wired():
     assert "Hủy batch" in component
 
 
-def test_frontend_deep_analysis_mode_is_wired():
+def test_frontend_analysis_mode_selector_is_removed():
     app = (ROOT / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
     types = (ROOT / "frontend" / "src" / "types.ts").read_text(encoding="utf-8")
 
-    assert "GeminiAnalysisMode" in types
-    assert "geminiAnalysisMode" in app
-    assert "Phân tích sâu" in app
-    assert "gemini_analysis_mode" in app
+    assert "GeminiAnalysisMode" not in types
+    assert "geminiAnalysisMode" not in app
+    assert "Chế độ Gemini" not in app
+    assert "gemini_analysis_mode" not in app
 
 
 def test_frontend_target_languages_are_limited_to_tts_supported_languages():

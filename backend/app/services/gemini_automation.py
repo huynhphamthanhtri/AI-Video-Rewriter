@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import json
 import logging
 import os
@@ -15,37 +16,11 @@ from typing import Any, Callable
 from app.core.config import settings
 from app.schemas.prompt import PromptGenerateRequest
 from app.schemas.render import RenderOptions
-from app.services.gemini_analysis_validator import MIN_ANALYSIS_SEGMENTS_LONG, analysis_latest_end_seconds, analysis_segment_count, looks_like_analysis_root, minimum_analysis_segments, validate_analysis_payload
-from app.services.gemini_story_plan_validator import looks_like_story_plan_root, story_plan_summary, validate_story_plan_payload
-from app.services.gemini_layered_pipeline import (
-    looks_like_alignment_audit_root,
-    looks_like_chapter_analysis_root,
-    looks_like_coverage_review_root,
-    looks_like_director_plan_root,
-    looks_like_edit_strategy_root,
-    looks_like_final_chunk_root,
-    looks_like_story_assembly_root,
-    looks_like_source_access_root,
-    looks_like_timeline_root,
-    merge_final_chunks,
-    pipeline_quality_summary,
-    director_strategy,
-    duration_gate,
-    two_prompt_duration_gate,
-    validate_alignment_audit_payload,
-    validate_chapter_analysis_payload,
-    validate_coverage_review_payload,
-    validate_director_plan_payload,
-    validate_edit_strategy_payload,
-    validate_final_chunk_payload,
-    validate_story_assembly_payload,
-    validate_source_access_payload,
-    validate_timeline_payload,
-)
 from app.services.fingerprint import build_init_script, generate_fingerprint
 from app.services.json_validator import JsonValidator, loads_json_with_repair
 from app.services.prompt_generator import PromptGenerator
-from app.services.video_tools import ui_safe_error
+from app.services.pipeline_telemetry import PipelineTelemetry
+from app.services.video_tools import ui_safe_error, write_playwright_storage_cookies_to_netscape
 
 logger = logging.getLogger(__name__)
 
@@ -88,17 +63,24 @@ GEMINI_SELECTORS = {
     ],
     "send_button": [
         "button[aria-label*='Send']",
+        "button[aria-label*='Gửi']",
         "button[data-test-id='send-button']",
         "button.send-button",
         "button[class*='send']",
+        "button:has(svg[data-icon='send'])",
+        "button:has(svg[aria-label='Send'])",
     ],
     "stop_button": [
-        "button:has-text('Stop')",
         "button[aria-label*='Stop']",
         "button[aria-label*='stop']",
+        "button[aria-label*='Dừng']",
+        "button[aria-label*='dừng']",
+        "button:has-text('Stop')",
+        "button:has-text('Dừng')",
         "button[class*='stop']",
         "[data-test-id='stop-generation']",
-        "button:has-text('Dừng')",
+        "button:has(svg[data-icon='stop'])",
+        "button:has(svg[aria-label='Stop'])",
     ],
     "sign_in_indicators": [
         "a[href*='signin']",
@@ -170,7 +152,9 @@ class GeminiAutomationTask:
         self.result: dict | None = None
         self.error: str | None = None
         self.cancel_requested = False
+        self.telemetry = PipelineTelemetry()
         self._render_job_id: str | None = None
+        self._context: Any = None
         self.states: list[dict] = [
             {"step": "init", "label": "Khởi tạo", "status": "running", "start_ts": time.time(), "end_ts": None},
         ]
@@ -248,6 +232,7 @@ class GeminiAutomationTask:
             "result": self.result,
             "error": self.error,
             "states": self.states,
+            "telemetry": self.telemetry.snapshot(),
         }
 
     async def wait_for_update(self, timeout: float = 2.0) -> bool:
@@ -634,6 +619,35 @@ class GeminiAutomationService:
                 raise
             return False
 
+    async def _capture_youtube_cookies(self, context: Any, session_path: Path) -> bool:
+        """Navigate to YouTube in a hidden tab to capture YouTube cookies into session."""
+        try:
+            yt_page = await context.new_page()
+            await yt_page.goto("https://www.youtube.com/", wait_until="domcontentloaded", timeout=15000)
+            await asyncio.sleep(1.5)
+            await self._save_session_state(context, session_path)
+            logger.info("YouTube cookie capture: session saved after navigating youtube.com")
+            await yt_page.close()
+            return True
+        except Exception as exc:
+            logger.warning("YouTube cookie capture failed (non-fatal): %s", exc)
+            return False
+
+    async def _export_youtube_cookies(self, session_path: Path) -> bool:
+        """Convert Playwright storage_state to Netscape cookies.txt for yt-dlp."""
+        try:
+            output_path = Path(settings.outputs_dir).parent / "data" / "cookies" / "cookies.txt"
+            health = write_playwright_storage_cookies_to_netscape(session_path, output_path)
+            logger.info(
+                "YouTube cookies export: valid=%s path=%s total=%d youtube=%d auth=%d strong=%s",
+                health.valid, output_path, health.total_cookies,
+                health.youtube_cookies, health.auth_cookies, health.has_strong_auth,
+            )
+            return health.valid
+        except Exception as exc:
+            logger.warning("YouTube cookies export failed (non-fatal): %s", exc)
+            return False
+
     async def open_standalone_browser(self, user_data_dir: str | None = None) -> str:
         active_browser_id = self._active_standalone_browser_id()
         if active_browser_id:
@@ -693,10 +707,9 @@ class GeminiAutomationService:
                 profile_path.mkdir(parents=True, exist_ok=True)
                 executable_path = getattr(pw.chromium, "executable_path", None)
                 logger.info(
-                    "Opening Gemini browser: profile=%s executable=%s channel=%s headless=%s",
+                    "Opening Gemini browser: profile=%s executable=%s headless=%s",
                     profile_path,
                     executable_path or "<default>",
-                    "default",
                     False,
                 )
                 logger.info(
@@ -753,6 +766,7 @@ class GeminiAutomationService:
                 self._set_live_session_status(session_path, login_state, browser_id=browser_id, force=True)
                 if login_state["logged_in"]:
                     await self._save_session_state(context, session_path)
+                    await self._capture_youtube_cookies(context, session_path)
                     self._set_live_session_status(session_path, login_state, browser_id=browser_id)
 
                 async def _save_loop():
@@ -785,6 +799,8 @@ class GeminiAutomationService:
                     pass
                 except Exception:
                     pass
+                await self._save_session_state(context, session_path)
+                await self._export_youtube_cookies(session_path)
                 try:
                     await context.close()
                 except Exception:
@@ -818,12 +834,12 @@ class GeminiAutomationService:
 
     def start(self, task_id: str, prompt_text: str, render_payload: dict, user_data_dir: str | None = None,
               headless: bool | None = None, thinking_mode: str = "extended",
-              analysis_mode: str = "deep_analysis", form_data: dict | None = None,
+              form_data: dict | None = None,
               dry_run: bool = False) -> GeminiAutomationTask:
         task = GeminiAutomationTask(task_id)
         self._tasks[task_id] = task
         ud = user_data_dir or self._get_user_data_dir()
-        asyncio.create_task(self._run_pipeline(task, prompt_text, render_payload, ud, headless, thinking_mode, analysis_mode, form_data, dry_run))
+        asyncio.create_task(self._run_pipeline(task, prompt_text, render_payload, ud, headless, thinking_mode, form_data, dry_run))
         return task
 
     def get_task(self, task_id: str) -> GeminiAutomationTask | None:
@@ -841,15 +857,25 @@ class GeminiAutomationService:
                 task._render_job_id = None
             except Exception:
                 logger.exception("Failed to cancel render job %s", task._render_job_id)
+        # Force-close Playwright context to release Chrome profile lock
+        if task._context:
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(task._context.close())
+                else:
+                    loop.run_until_complete(task._context.close())
+            except Exception:
+                logger.exception("Failed to close Playwright context on cancel")
         if task.status == "running":
             task.cancel_requested = True
             task.update("cancelling", "Đang hủy...")
         return True
 
     async def _run_pipeline(self, task: GeminiAutomationTask, prompt_text: str, render_payload: dict,
-                           user_data_dir: str | None = None, headless: bool | None = None,
-                           thinking_mode: str = "extended", analysis_mode: str = "deep_analysis",
-                           form_data: dict | None = None, dry_run: bool = False) -> None:
+                            user_data_dir: str | None = None, headless: bool | None = None,
+                            thinking_mode: str = "extended",
+                            form_data: dict | None = None, dry_run: bool = False) -> None:
         browser = None
         context = None
         headless_resolved = settings.playwright_headless if headless is None else headless
@@ -890,6 +916,7 @@ class GeminiAutomationService:
                         persistent=True,
                         persistent_profile_path=profile_path,
                     )
+                    task._context = context
                 elif user_data_dir:
                     pd = self._profile_dir(user_data_dir)
                     auth_cookies = self._extract_auth_cookies(pd) if pd else []
@@ -901,6 +928,7 @@ class GeminiAutomationService:
                             persistent=True,
                             persistent_profile_path=profile_path,
                         )
+                        task._context = context
                     else:
                         task.update("navigate_gemini", "Đang khởi tạo phiên mới...")
                         browser, context, page = await self._launch_stealth_context(
@@ -908,6 +936,7 @@ class GeminiAutomationService:
                             persistent=True,
                             persistent_profile_path=profile_path,
                         )
+                        task._context = context
                 else:
                     task.update("navigate_gemini", "Gemini chưa đăng nhập. Đang mở trình duyệt để bạn đăng nhập lần đầu.")
                     browser, context, page = await self._launch_stealth_context(
@@ -915,6 +944,7 @@ class GeminiAutomationService:
                         persistent=True,
                         persistent_profile_path=profile_path,
                     )
+                    task._context = context
 
                 task.update("navigate_gemini", "Đang truy cập Gemini...")
                 await page.goto(settings.gemini_url, wait_until="domcontentloaded")
@@ -952,21 +982,8 @@ class GeminiAutomationService:
                     )
                     return
 
-                if analysis_mode == "deep_analysis":
-                    try:
-                        prompt_req = PromptGenerateRequest.model_validate(form_data or {})
-                    except Exception as exc:
-                        task.mark_error(f"Không thể tạo prompt phân tích sâu: {exc}")
-                        return
-                    final_payload = await self._run_two_prompt_deep_pipeline(task, page, context, prompt_req, thinking_mode)
-                    if task.status != "running" or final_payload is None:
-                        return
-                    if dry_run:
-                        await self._validate_without_render(task, json.dumps(final_payload, ensure_ascii=False), render_payload)
-                        return
-                    await self._validate_and_render(task, json.dumps(final_payload, ensure_ascii=False), render_payload)
-                    return
-
+                simple_pass_started = time.perf_counter()
+                simple_submit_count = 1
                 await self._submit_prompt(task, page, context, prompt_text, thinking_mode)
                 if task.status != "running":
                     return
@@ -987,6 +1004,7 @@ class GeminiAutomationService:
                             )
                             task.update("submitting_prompt", "Gemini vừa reload. Đang gửi lại prompt...")
                         await self._submit_prompt(task, page, context, prompt_text, thinking_mode)
+                        simple_submit_count += 1
                         if task.status != "running":
                             return
                         response_text = await self._wait_for_response(task, page, context)
@@ -1067,6 +1085,15 @@ class GeminiAutomationService:
                     await self._validate_without_render(task, json_str, render_payload)
                 else:
                     await self._validate_and_render(task, json_str, render_payload)
+                task.telemetry.record_gemini_pass(
+                    name="simple_editor_edl",
+                    attempt=simple_submit_count,
+                    prompt_text=prompt_text,
+                    response_text=response_text,
+                    started_at=simple_pass_started,
+                    valid=task.status == "done",
+                    errors=[task.error] if task.error else [],
+                )
 
         except asyncio.CancelledError:
             task.mark_error("Pipeline bị hủy.", _cancel_render_fn=self._cancel_render_fn)
@@ -1084,183 +1111,19 @@ class GeminiAutomationService:
                     msg = f"{type(exc).__name__}: lỗi nội bộ khi chạy Gemini automation."
             task.mark_error(msg, _cancel_render_fn=self._cancel_render_fn)
         finally:
-            if context:
-                try:
-                    await context.close()
-                except Exception:
-                    pass
-            elif browser:
-                try:
-                    await browser.close()
-                except Exception:
-                    pass
-
-    async def _run_analysis_pass(
-        self,
-        task: GeminiAutomationTask,
-        page: Any,
-        context: Any,
-        analysis_prompt: str,
-        thinking_mode: str,
-    ) -> dict | None:
-        response_text = ""
-        last_errors: list[str] = []
-        for submit_attempt in range(2):
-            task.update("analyzing_source", f"Đang phân tích sâu video nguồn (lần {submit_attempt + 1}/2)...")
-            await self._submit_prompt(task, page, context, analysis_prompt, thinking_mode)
-            if task.status != "running":
-                return None
             try:
-                response_text = await self._wait_for_response(
-                    task,
-                    page,
-                    context,
-                    extract_json_fn=self._extract_analysis_json,
-                    timeout_debug_reason="analysis_timeout_raw",
-                )
-            except TimeoutError:
-                response_text = await self._latest_response_text(page)
-                recovered, errors = await self._recover_analysis_from_partial(task, response_text)
-                if recovered is not None:
-                    return recovered
-                last_errors = errors
-                raise
-            await asyncio.sleep(0)
-
-            for retry in range(3):
-                if task.status != "running":
-                    return None
-                task.update("validating_analysis", f"Đang kiểm tra bản phân tích sâu (lần {retry + 1}/3)...")
-                if self._response_indicates_source_access_failure(response_text):
-                    await self._save_raw_debug(task, response_text, "analysis_source_access_failure")
-                    task.mark_error(
-                        "Gemini có vẻ không xem được video nguồn trong bước phân tích sâu. "
-                        "Hãy thử lại hoặc kiểm tra Gemini có truy cập được video."
-                    )
-                    return None
-                json_str = self._extract_analysis_json(response_text)
-                if json_str:
+                if context:
                     try:
-                        parsed = loads_json_with_repair(json_str)
-                    except (json.JSONDecodeError, ValueError) as exc:
-                        last_errors = [f"JSON parse error: {exc}"]
-                    else:
-                        valid, errors, fixed = validate_analysis_payload(parsed)
-                        if valid and fixed is not None:
-                            return fixed
-                        last_errors = errors
-                        logger.warning("Gemini analysis validation failed for task %s: %s", task.task_id, errors[:5])
-                        await self._save_analysis_debug(task, response_text, parsed, errors)
-                        break
-
-                if retry < 2:
-                    await asyncio.sleep(3)
+                        await context.close()
+                    except Exception:
+                        pass
+                elif browser:
                     try:
-                        response_text = await self._wait_for_response(
-                            task,
-                            page,
-                            context,
-                            extract_json_fn=self._extract_analysis_json,
-                            timeout_debug_reason="analysis_timeout_raw",
-                        )
-                    except TimeoutError:
-                        response_text = await self._latest_response_text(page)
-                        recovered, errors = await self._recover_analysis_from_partial(task, response_text)
-                        if recovered is not None:
-                            return recovered
-                        last_errors = errors
-                        raise
-
-        try:
-            debug_path = settings.temp_dir / "gemini_failed_response"
-            debug_path.mkdir(parents=True, exist_ok=True)
-            (debug_path / f"{task.task_id}_analysis_raw.txt").write_text(response_text[:10000] if response_text else "", encoding="utf-8")
-            (debug_path / f"{task.task_id}_analysis_errors.json").write_text(json.dumps(last_errors[:10], ensure_ascii=False), encoding="utf-8")
-        except Exception:
-            pass
-        details = "; ".join(last_errors[:3]) if last_errors else "Gemini không trả JSON phân tích hợp lệ."
-        task.mark_error(f"Phân tích sâu thất bại sau 2 lần thử: {details}")
-        return None
-
-    async def _latest_response_text(self, page: Any) -> str:
-        try:
-            text, _ = await self._read_gemini_response_snapshot(page)
-            return text
-        except Exception:
-            return ""
-
-    async def _recover_analysis_from_partial(self, task: GeminiAutomationTask, response_text: str) -> tuple[dict | None, list[str]]:
-        json_str = self._extract_analysis_json(response_text)
-        if not json_str:
-            return None, ["Gemini timeout before a complete analysis JSON object was available."]
-        try:
-            parsed = loads_json_with_repair(json_str)
-        except (json.JSONDecodeError, ValueError) as exc:
-            return None, [f"JSON parse error after timeout: {exc}"]
-        valid, errors, fixed = validate_analysis_payload(parsed)
-        if valid and fixed is not None:
-            await self._save_json_debug(task, "analysis_timeout_recovered", fixed)
-            return fixed, []
-        await self._save_analysis_debug(task, response_text, parsed, errors)
-        return None, errors
-
-    async def _run_story_plan_pass(
-        self,
-        task: GeminiAutomationTask,
-        page: Any,
-        context: Any,
-        story_plan_prompt: str,
-        thinking_mode: str,
-    ) -> dict | None:
-        response_text = ""
-        last_errors: list[str] = []
-        for submit_attempt in range(2):
-            task.update("building_final_prompt", f"Đang lập story plan (lần {submit_attempt + 1}/2)...")
-            await self._submit_prompt(task, page, context, story_plan_prompt, thinking_mode)
-            if task.status != "running":
-                return None
-            response_text = await self._wait_for_response(
-                task,
-                page,
-                context,
-                extract_json_fn=self._extract_story_plan_json,
-                timeout_debug_reason="story_plan_timeout_raw",
-            )
-            await asyncio.sleep(0)
-
-            for retry in range(3):
-                if task.status != "running":
-                    return None
-                task.update("validating_analysis", f"Đang kiểm tra story plan (lần {retry + 1}/3)...")
-                json_str = self._extract_story_plan_json(response_text)
-                if json_str:
-                    try:
-                        parsed = loads_json_with_repair(json_str)
-                    except (json.JSONDecodeError, ValueError) as exc:
-                        last_errors = [f"JSON parse error: {exc}"]
-                    else:
-                        valid, errors, fixed = validate_story_plan_payload(parsed)
-                        await self._save_story_plan_debug(task, response_text, fixed or parsed, errors)
-                        if valid and fixed is not None:
-                            return fixed
-                        last_errors = errors
-                        logger.warning("Gemini story plan validation failed for task %s: %s", task.task_id, errors[:5])
-                        break
-
-                if retry < 2:
-                    await asyncio.sleep(3)
-                    response_text = await self._wait_for_response(
-                        task,
-                        page,
-                        context,
-                        extract_json_fn=self._extract_story_plan_json,
-                        timeout_debug_reason="story_plan_timeout_raw",
-                    )
-
-        await self._save_raw_debug(task, response_text, "story_plan_failed_raw")
-        details = "; ".join(last_errors[:3]) if last_errors else "Gemini không trả JSON story plan hợp lệ."
-        task.mark_error(f"Story plan thất bại sau 2 lần thử: {details}")
-        return None
+                        await browser.close()
+                    except Exception:
+                        pass
+            finally:
+                task._context = None
 
     async def _run_json_pass(
         self,
@@ -1280,8 +1143,20 @@ class GeminiAutomationService:
         response_text = ""
         last_errors: list[str] = []
         for submit_attempt in range(attempts):
+            pass_started_at = time.perf_counter()
+            effective_prompt = prompt_text
+            if submit_attempt > 0 and last_errors:
+                correction_lines = "\n".join(f"- {error}" for error in last_errors[:8])
+                effective_prompt = (
+                    f"{prompt_text}\n\n"
+                    "CORRECTION REQUIRED — the previous JSON failed deterministic validation:\n"
+                    f"{correction_lines}\n"
+                    "Return the complete corrected JSON only. Preserve valid content, fix every listed error, "
+                    "and do not add fields outside the requested schema."
+                )
+                await self._save_prompt_text(task, effective_prompt, f"{debug_prefix}_correction_{submit_attempt + 1}")
             task.update(step, f"{message} (lần {submit_attempt + 1}/{attempts})...")
-            await self._submit_prompt(task, page, context, prompt_text, thinking_mode)
+            await self._submit_prompt(task, page, context, effective_prompt, thinking_mode)
             if task.status != "running":
                 return None
             response_text = await self._wait_for_response(
@@ -1303,9 +1178,26 @@ class GeminiAutomationService:
                     await self._save_raw_debug(task, response_text, f"{debug_prefix}_raw")
                     await self._save_json_debug(task, f"{debug_prefix}_extracted", fixed or parsed)
                     if valid and fixed is not None:
+                        task.telemetry.record_gemini_pass(
+                            name=debug_prefix,
+                            attempt=submit_attempt + 1,
+                            prompt_text=effective_prompt,
+                            response_text=response_text,
+                            started_at=pass_started_at,
+                            valid=True,
+                        )
                         return fixed
                     last_errors = errors
                     logger.warning("Gemini %s validation failed for task %s: %s", debug_prefix, task.task_id, errors[:5])
+            task.telemetry.record_gemini_pass(
+                name=debug_prefix,
+                attempt=submit_attempt + 1,
+                prompt_text=effective_prompt,
+                response_text=response_text,
+                started_at=pass_started_at,
+                valid=False,
+                errors=last_errors,
+            )
             await self._save_raw_debug(task, response_text, f"{debug_prefix}_failed_raw")
         details = "; ".join(last_errors[:3]) if last_errors else f"Gemini không trả JSON {debug_prefix} hợp lệ."
         task.mark_error(f"{message} thất bại sau {attempts} lần thử: {details}")
@@ -1469,20 +1361,23 @@ class GeminiAutomationService:
     def _limit_chapters_for_runtime(self, chapters: list[dict]) -> list[dict]:
         if len(chapters) <= 9:
             return chapters
-        important_roles = {"setup", "climax", "ending", "payoff"}
+        important_roles = {"hook", "opening", "setup", "climax", "ending", "payoff"}
         selected: list[dict] = []
+        for chapter in (chapters[0], chapters[-1]):
+            if chapter not in selected:
+                selected.append(chapter)
         for chapter in chapters:
             role = str(chapter.get("story_role", "")).lower()
             if role in important_roles and chapter not in selected:
                 selected.append(chapter)
+            if len(selected) >= 9:
+                break
         step = max(1, len(chapters) // 6)
         for index in range(0, len(chapters), step):
             if chapters[index] not in selected:
                 selected.append(chapters[index])
             if len(selected) >= 9:
                 break
-        if chapters[-1] not in selected:
-            selected[-1:] = [chapters[-1]] if len(selected) >= 9 else selected + [chapters[-1]]
         return sorted(selected[:9], key=lambda item: item.get("chapter_index", 0))
 
     def _relevant_analyses_for_selected_beats(self, chapter_analyses: list[dict], selected_beats: list[dict]) -> list[dict]:
@@ -1538,8 +1433,19 @@ class GeminiAutomationService:
         if len(chapters) != len(timeline_json.get("chapters", [])):
             await self._save_json_debug(task, "timeline_runtime_limited_chapters", {"selected_chapters": chapters, "original_count": len(timeline_json.get("chapters", []))})
         chapter_analyses: list[dict] = []
-        for chapter in chapters:
+        for chapter_position, chapter in enumerate(chapters, start=1):
+            task.update(
+                "analyzing_chapter",
+                f"Đang phân tích chapter {chapter_position}/{len(chapters)}",
+                {"current_item": chapter_position, "total_items": len(chapters), "chapter_index": chapter.get("chapter_index")},
+            )
             prompt = generator.generate_chapter_analysis_prompt(prompt_req, timeline_json, chapter)
+
+            def validate_requested_chapter(parsed: object, ch: dict = chapter) -> tuple[bool, list[str], dict | None]:
+                if isinstance(parsed, dict) and isinstance(ch.get("chapter_index"), int):
+                    parsed = {**parsed, "chapter_index": ch["chapter_index"]}
+                return validate_chapter_analysis_payload(parsed, ch)
+
             chapter_json = await self._run_json_pass(
                 task,
                 page,
@@ -1549,8 +1455,9 @@ class GeminiAutomationService:
                 prompt_text=prompt,
                 thinking_mode=thinking_mode,
                 extract_json_fn=self._extract_chapter_analysis_json,
-                validate_fn=lambda parsed, ch=chapter: validate_chapter_analysis_payload(parsed, ch),
+                validate_fn=validate_requested_chapter,
                 debug_prefix=f"chapter_{chapter.get('chapter_index', len(chapter_analyses) + 1)}",
+                attempts=3,
             )
             if task.status != "running" or chapter_json is None:
                 return None
@@ -1565,7 +1472,7 @@ class GeminiAutomationService:
             prompt_text=generator.generate_director_plan_prompt(prompt_req, timeline_json, chapter_analyses),
             thinking_mode=thinking_mode,
             extract_json_fn=self._extract_director_plan_json,
-            validate_fn=lambda parsed: validate_director_plan_payload(parsed, chapter_analyses),
+            validate_fn=lambda parsed: validate_director_plan_payload(parsed, chapter_analyses, prompt_req.target_duration),
             debug_prefix="director_plan",
         )
         if task.status != "running" or director_plan is None:
@@ -1592,7 +1499,7 @@ class GeminiAutomationService:
                 prompt_text=generator.generate_final_chunk_prompt(prompt_req, chunk_name, selected_beats, self._relevant_analyses_for_selected_beats(chapter_analyses, selected_beats), strategy_json),
                 thinking_mode=thinking_mode,
                 extract_json_fn=self._extract_final_chunk_json,
-                validate_fn=validate_final_chunk_payload,
+                validate_fn=lambda parsed, beats=selected_beats: validate_final_chunk_against_selected_beats(parsed, beats),
                 debug_prefix=f"chunk_{chunk_name}",
             )
             if task.status != "running" or chunk_json is None:
@@ -1614,6 +1521,26 @@ class GeminiAutomationService:
         duration_ok, duration_info = duration_gate(final_payload, strategy_json)
         await self._save_json_debug(task, "duration_gate", duration_info)
         if not duration_ok:
+            too_long = duration_info.get("over_by_seconds", 0) > 0
+            narration_too_short = duration_info.get("narration_short_by_seconds", 0) > 0
+            duration_problem = (
+                f"Final duration {duration_info['final_duration_seconds']:.1f}s exceeds maximum threshold {duration_info['max_threshold_seconds']:.1f}s."
+                if too_long else
+                (
+                    f"Narration density is too low: estimated spoken duration {duration_info['estimated_narration_seconds']:.1f}s is below minimum threshold {duration_info['threshold_seconds']:.1f}s."
+                    if narration_too_short else
+                    f"Final duration {duration_info['final_duration_seconds']:.1f}s is below Gemini minimum threshold {duration_info['threshold_seconds']:.1f}s."
+                )
+            )
+            duration_repair = (
+                "Shorten the final EDL to the Director Plan maximum. Remove redundant beats and compress narration while preserving hook, causal story flow, climax, ending, and scene-voice alignment."
+                if too_long else
+                (
+                    "Expand narration density using concrete details from the existing selected beats. Add enough natural voiceover words to meet the estimated spoken-duration minimum while preserving timestamps, matching visuals, and story flow."
+                    if narration_too_short else
+                    "Expand the final EDL using the existing selected beats. Add enough natural voiceover and matching visual segments to meet the Director Plan minimum duration while preserving scene-voice alignment."
+                )
+            )
             audit_for_duration = {
                 "alignment_audit_version": 1,
                 "passed": False,
@@ -1622,8 +1549,8 @@ class GeminiAutomationService:
                     "severity": "high",
                     "chunk_name": chunks[-1].get("chunk_name", "chunk_1"),
                     "segment_index": 0,
-                    "problem": f"Final duration {duration_info['final_duration_seconds']:.1f}s is below Gemini minimum threshold {duration_info['threshold_seconds']:.1f}s.",
-                    "repair_instruction": "Expand the final EDL using the existing selected beats. Add enough natural voiceover and matching visual segments to meet the Director Plan minimum duration while preserving scene-voice alignment.",
+                    "problem": duration_problem,
+                    "repair_instruction": duration_repair,
                 }],
             }
             repaired = await self._repair_one_chunk(
@@ -1647,7 +1574,42 @@ class GeminiAutomationService:
             duration_ok, duration_info = duration_gate(final_payload, strategy_json)
             await self._save_json_debug(task, "duration_gate_after_repair", duration_info)
             if not duration_ok:
-                task.mark_error("Final vẫn ngắn hơn mức tối thiểu Gemini đã chọn sau 1 lần repair; dừng trước render.")
+                if duration_info.get("over_by_seconds", 0) > 0:
+                    audit_for_duration["issues"][0]["problem"] = (
+                        f"Final duration {duration_info['final_duration_seconds']:.1f}s still exceeds "
+                        f"maximum threshold {duration_info['max_threshold_seconds']:.1f}s after the first repair."
+                    )
+                    audit_for_duration["issues"][0]["repair_instruction"] = (
+                        "Shorten and compress this chunk aggressively so the merged final EDL is below the maximum threshold. "
+                        "Remove redundant narration and reset SRT timestamps to a compact continuous timeline while preserving the strongest beats, story flow, and scene-voice alignment."
+                    )
+                else:
+                    audit_for_duration["issues"][0]["problem"] = (
+                        f"Final duration {duration_info['final_duration_seconds']:.1f}s is below "
+                        f"Gemini minimum threshold {duration_info['threshold_seconds']:.1f}s after the first repair."
+                    )
+                repaired = await self._repair_one_chunk(
+                    task,
+                    page,
+                    context,
+                    prompt_req,
+                    thinking_mode,
+                    generator,
+                    chunks,
+                    audit_for_duration,
+                    assembly_json,
+                    chapter_analyses,
+                    strategy_json,
+                    timeline_json,
+                    director_plan,
+                )
+                if task.status != "running" or repaired is None:
+                    return None
+                chunks, final_payload, _ = repaired
+                duration_ok, duration_info = duration_gate(final_payload, strategy_json)
+                await self._save_json_debug(task, "duration_gate_after_repair_2", duration_info)
+            if not duration_ok:
+                task.mark_error("Final vẫn ngắn hơn mức tối thiểu Gemini đã chọn sau 2 lần repair; dừng trước render.")
                 return None
 
         audit_json = await self._run_json_pass(
@@ -1718,6 +1680,34 @@ class GeminiAutomationService:
         if previous is None:
             return None
         selected_beats = self._beats_for_grouped_chunk(assembly_json, chunk_name)
+        repair_instruction = str(issue.get("repair_instruction", "")).lower()
+        previous_duration = final_duration_seconds(previous)
+        previous_chars = sum(len(str(item.get("text", "")).strip()) for item in previous.get("srt", []) if isinstance(item, dict))
+
+        def validate_repaired_chunk(parsed: object) -> tuple[bool, list[str], dict | None]:
+            valid, errors, normalized = validate_final_chunk_against_selected_beats(parsed, selected_beats)
+            if not valid or normalized is None:
+                return valid, errors, normalized
+            repaired_duration = final_duration_seconds(normalized)
+            minimum_change = 3.0
+            repaired_chars = sum(len(str(item.get("text", "")).strip()) for item in normalized.get("srt", []) if isinstance(item, dict))
+            if "narration density" in repair_instruction and repaired_chars < previous_chars * 1.1:
+                required_chars = math.ceil(previous_chars * 1.1)
+                errors.append(
+                    f"repair did not add enough narration: previous={previous_chars} chars, repaired={repaired_chars} chars; "
+                    f"the corrected chunk must contain at least {required_chars} narration characters. "
+                    "Add new concrete, non-repetitive narration aligned to the selected beats; returning the previous text unchanged is invalid."
+                )
+            elif "expand" in repair_instruction and repaired_duration < previous_duration + minimum_change:
+                errors.append(
+                    f"repair did not expand duration: previous={previous_duration:.1f}s, repaired={repaired_duration:.1f}s; add at least {minimum_change:.1f}s of aligned narration and visuals."
+                )
+            if any(word in repair_instruction for word in ("shorten", "compress", "remove redundant")) and repaired_duration > previous_duration - minimum_change:
+                errors.append(
+                    f"repair did not shorten duration: previous={previous_duration:.1f}s, repaired={repaired_duration:.1f}s; remove at least {minimum_change:.1f}s while preserving story flow."
+                )
+            return not errors, errors, normalized if not errors else None
+
         repaired_chunk = await self._run_json_pass(
             task,
             page,
@@ -1727,9 +1717,9 @@ class GeminiAutomationService:
             prompt_text=generator.generate_repair_chunk_prompt(prompt_req, chunk_name, previous, audit_json, selected_beats, self._relevant_analyses_for_selected_beats(chapter_analyses, selected_beats), strategy_json),
             thinking_mode=thinking_mode,
             extract_json_fn=self._extract_final_chunk_json,
-            validate_fn=validate_final_chunk_payload,
+            validate_fn=validate_repaired_chunk,
             debug_prefix=f"repair_chunk_{chunk_name}",
-            attempts=1,
+            attempts=3,
         )
         if task.status != "running" or repaired_chunk is None:
             return None
@@ -1751,7 +1741,7 @@ class GeminiAutomationService:
         )
         if task.status != "running" or second_audit is None:
             return None
-        if second_audit.get("final_recommendation") != "render" and not second_audit.get("passed"):
+        if second_audit.get("final_recommendation") != "render" or not second_audit.get("passed"):
             await self._save_json_debug(task, "quality_summary_after_failed_repair", pipeline_quality_summary(timeline_json, chapter_analyses, strategy_json, assembly_json, final_payload, second_audit))
             task.mark_error("Alignment audit vẫn fail sau 1 lần repair; dừng trước render để tránh video kém chất lượng.")
             return None
@@ -2294,7 +2284,8 @@ class GeminiAutomationService:
         async def stop_button_is_visible() -> bool:
             for sel in GEMINI_SELECTORS["stop_button"]:
                 try:
-                    if await page.locator(sel).first.count() > 0:
+                    loc = page.locator(sel).first
+                    if await loc.count() > 0 and await loc.is_visible(timeout=500):
                         return True
                 except Exception:
                     continue
@@ -2399,13 +2390,20 @@ class GeminiAutomationService:
                 send_btn = page.locator(sel).first
                 if await send_btn.count() > 0 and await send_btn.is_visible():
                     await send_btn.click(timeout=3000)
-                    logger.info("Send button clicked via selector: %s", sel)
+                    logger.info(
+                        "Send button clicked via selector: %s for task %s",
+                        sel, task.task_id,
+                    )
                     await asyncio.sleep(2)
                     sent = await stop_button_is_visible()
                     if not sent:
                         try:
                             text_after_send = await input_element.inner_text()
                             sent = len(text_after_send.strip()) < 50
+                            logger.debug(
+                                "After send-btn click: stop_btn=%s text_remaining=%d",
+                                sent, len(text_after_send.strip()),
+                            )
                         except Exception:
                             pass
                     break
@@ -2418,12 +2416,27 @@ class GeminiAutomationService:
             await page.keyboard.press("Enter")
             await asyncio.sleep(2)
             sent = await stop_button_is_visible()
+            logger.info(
+                "Enter fallback result for task %s: stop_btn=%s",
+                task.task_id, sent,
+            )
 
         if not sent:
             text_after_submit = await input_element.inner_text()
-            if len(text_after_submit.strip()) > 50:
+            remaining = len(text_after_submit.strip())
+            logger.info(
+                "Submit result for task %s: sent=%s remaining=%d",
+                task.task_id, sent, remaining,
+            )
+            if remaining < 50:
+                logger.info(
+                    "Prompt input cleared after submit for task %s; assuming Gemini accepted prompt.",
+                    task.task_id,
+                )
+            else:
                 task.mark_error(
-                    f"Gemini đã nhập prompt nhưng không gửi được (URL: {page.url}). "
+                    f"Gemini không thể gửi prompt (URL: {page.url}). "
+                    f"Nội dung còn lại: {remaining} ký tự. "
                     "Vui lòng kiểm tra trang Gemini trên trình duyệt và thử lại."
                 )
                 return
@@ -2626,22 +2639,16 @@ class GeminiAutomationService:
         timeout_debug_reason: str = "timeout_raw",
     ) -> str:
         extract_json_fn = extract_json_fn or self._extract_json
-        stop_sel = None
-        for sel in GEMINI_SELECTORS["stop_button"]:
-            try:
-                count = await page.locator(sel).count()
-                if count > 0:
-                    stop_sel = sel
-                    break
-            except Exception:
-                continue
-        if stop_sel:
-            try:
-                await page.locator(stop_sel).first.wait_for(state="visible", timeout=15000)
-            except Exception:
-                pass
-        else:
-            logger.debug("No stop button selector found; relying on copy-button and DOM polling")
+
+        async def _live_is_generating() -> bool:
+            for sel in GEMINI_SELECTORS["stop_button"]:
+                try:
+                    loc = page.locator(sel).first
+                    if await loc.count() > 0 and await loc.is_visible(timeout=300):
+                        return True
+                except Exception:
+                    continue
+            return False
 
         timeout_mins = max(1, round(settings.gemini_timeout_seconds / 60))
         task.update("waiting_response", f"Đang chờ Gemini trả kết quả... ({timeout_mins} phút tối đa)")
@@ -2651,6 +2658,7 @@ class GeminiAutomationService:
         last_text = ""
         stable_since: float | None = None
         last_log_at = 0.0
+        ever_generating = False
 
         while time.monotonic() < deadline:
             if task.status != "running" or task.cancel_requested:
@@ -2683,7 +2691,9 @@ class GeminiAutomationService:
                 pass
 
             copy_ready = await self._has_gemini_copy_button(page)
-            generating = stop_sel is not None
+            generating = await _live_is_generating()
+            if generating:
+                ever_generating = True
 
             text, text_source = await self._read_gemini_response_snapshot(page)
             json_str = extract_json_fn(text)
@@ -2708,9 +2718,17 @@ class GeminiAutomationService:
                 last_log_at = now
                 logger.debug(
                     "waiting_response: elapsed=%ds text_len=%d stable=%.1fs "
-                    "generating=%s copy_ready=%s json_ready=%s",
-                    elapsed, len(text), stable_seconds, generating, copy_ready, json_ready,
+                    "generating=%s copy_ready=%s json_ready=%s ever_generating=%s",
+                    elapsed, len(text), stable_seconds, generating, copy_ready, json_ready, ever_generating,
                 )
+
+            # Fast-fail: no generation activity after 45s and no response text
+            if elapsed >= 45 and not ever_generating and not text and not copy_ready:
+                logger.warning(
+                    "Gemini response wait fast-fail after %ds — no generation started for task %s",
+                    elapsed, task.task_id,
+                )
+                return ""
 
             if done_indicator and json_ready and stable_ready:
                 final_text = await self._finalize_response_text(context, page, text, extract_json_fn=extract_json_fn)
@@ -2979,8 +2997,12 @@ class GeminiAutomationService:
             return
         dump = parsed.model_dump() if hasattr(parsed, "model_dump") else parsed
         await self._save_json_debug(task, "dry_run_final_validated", dump if isinstance(dump, dict) else {"payload": dump})
-        srt_count = len(getattr(parsed, "srt", []) or []) if parsed is not None else 0
-        seg_count = len(getattr(parsed, "video_segments", []) or []) if parsed is not None else 0
+        if isinstance(dump, dict):
+            srt_count = len(dump.get("srt") or [])
+            seg_count = len(dump.get("video_segments") or [])
+        else:
+            srt_count = len(getattr(parsed, "srt", []) or []) if parsed is not None else 0
+            seg_count = len(getattr(parsed, "video_segments", []) or []) if parsed is not None else 0
         task.update("dry_run_done", "Dry-run hoàn tất: JSON Gemini hợp lệ, đã dừng trước render.")
         task.mark_done({"json_valid": True, "dry_run": True, "render_submitted": False, "srt_count": srt_count, "video_segment_count": seg_count, "gemini_json": dump})
 

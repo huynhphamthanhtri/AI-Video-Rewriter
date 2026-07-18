@@ -85,12 +85,12 @@ export function TitleTool({ renderOptions, jsonPayload, onRenderOptionsChange }:
   const badge = display.badge;
 
   return <Card>
-    <SectionTitle icon={Type} title="Title Tool" desc="Preview title overlay đúng tỉ lệ trước khi render"/>
+    <SectionTitle icon={Type} title="Tiêu đề" desc="Xem trước tiêu đề đúng tỉ lệ trước khi dựng"/>
     <div className="grid gap-6 xl:grid-cols-[1fr_380px]">
       <div className="rounded-[28px] border border-white/10 bg-slate-950/60 p-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap gap-2"><Pill tone="cyan">{isBlurFit ? '9:16 blur fit' : isVertical ? '9:16 center crop' : '16:9 horizontal'}</Pill><Pill tone={lines.length > 0 ? 'green' : 'yellow'}>{lines.length > 0 ? `${lines.length} dòng` : 'Không có title'}</Pill></div>
-          <span className="text-xs text-slate-500">Model: {model.width}x{model.height}</span>
+          <div className="flex flex-wrap gap-2"><Pill tone="cyan">{isBlurFit ? '9:16 nền mờ' : isVertical ? '9:16 cắt giữa' : '16:9 ngang'}</Pill><Pill tone={lines.length > 0 ? 'green' : 'yellow'}>{lines.length > 0 ? `${lines.length} dòng` : 'Không có tiêu đề'}</Pill></div>
+          <span className="text-xs text-slate-500">Khung: {model.width}x{model.height}</span>
         </div>
         <div className="grid min-h-[520px] place-items-center rounded-[24px] border border-white/10 bg-[#020617] p-4">
           <div ref={frameRef} className={`relative w-full overflow-hidden rounded-[24px] border border-white/10 shadow-2xl ${isVertical ? 'aspect-[9/16] max-h-[74vh] max-w-[440px]' : 'aspect-video max-w-5xl'}`}>
@@ -105,8 +105,8 @@ export function TitleTool({ renderOptions, jsonPayload, onRenderOptionsChange }:
                   <div className="rounded-2xl border border-white/15 bg-white/10 px-3 py-1.5 text-[11px] font-semibold text-white/60">Video {fgW}x{fgH}</div>
                 </div>
               </div>
-              <div className="absolute left-3 top-3 rounded bg-black/60 px-2 py-1 text-[10px] font-semibold leading-none text-white/60">Blur background</div>
-              <div className="absolute left-3 rounded bg-black/60 px-2 py-1 text-[10px] font-semibold leading-none text-white/60" style={{ top: fgY * scale + 4, fontSize: `${10 * Math.min(1, scale * 2)}px` }}>Foreground {fgW}x{fgH}</div>
+              <div className="absolute left-3 top-3 rounded bg-black/60 px-2 py-1 text-[10px] font-semibold leading-none text-white/60">Nền mờ</div>
+              <div className="absolute left-3 rounded bg-black/60 px-2 py-1 text-[10px] font-semibold leading-none text-white/60" style={{ top: fgY * scale + 4, fontSize: `${10 * Math.min(1, scale * 2)}px` }}>Video chính {fgW}x{fgH}</div>
             </> : <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_28%,rgba(148,163,184,.32),transparent_30%),linear-gradient(135deg,#1f2937,#020617)]"/>}
 
             {showGuides && (() => {
@@ -119,11 +119,11 @@ export function TitleTool({ renderOptions, jsonPayload, onRenderOptionsChange }:
                   <div className="absolute rounded-t-[20px] border-b border-dashed border-amber-400/30 bg-amber-400/5"
                     style={{ left: `${m.left}%`, right: `${m.right}%`, top: `${m.top}%`, height: `${(display.header_height_px / model.height) * 100}%` }}
                   >
-                    <span className="absolute left-1 top-0 text-[9px] text-amber-400/60">Header {display.header_height_px}px · Safe {display.safe_margin_px}px</span>
+                    <span className="absolute left-1 top-0 text-[9px] text-amber-400/60">Vùng đầu {display.header_height_px}px · An toàn {display.safe_margin_px}px</span>
                   </div>
                 )}
                 <div className="absolute inset-x-[14%] bottom-[8%] rounded-xl bg-black/50 px-4 py-2 text-center text-sm font-semibold text-white/70">
-                  Safe {display.safe_margin_px}px · Header {display.header_height_px}px
+                  An toàn {display.safe_margin_px}px · Vùng đầu {display.header_height_px}px
                 </div>
               </>;
             })()}
@@ -167,43 +167,43 @@ export function TitleTool({ renderOptions, jsonPayload, onRenderOptionsChange }:
             </div>}
           </div>
         </div>
-        <div className="mt-3 grid gap-2 text-xs text-slate-400 md:grid-cols-4"><span>Target: {model.width}x{model.height}</span><span>Font: {lines.length > 0 ? `${lines[0].font_size}px` : '-'}</span><span>Y: {lines.length > 0 ? `${lines[0].y_px}px` : '-'}</span><span>Scale: {scale.toFixed(3)}</span></div>
+        <div className="mt-3 grid gap-2 text-xs text-slate-400 md:grid-cols-4"><span>Kích thước: {model.width}x{model.height}</span><span>Phông chữ: {lines.length > 0 ? `${lines[0].font_size}px` : '-'}</span><span>Y: {lines.length > 0 ? `${lines[0].y_px}px` : '-'}</span><span>Scale: {scale.toFixed(3)}</span></div>
       </div>
 
       <aside className="rounded-[24px] border border-amber-500/20 bg-amber-500/10 p-4">
-        <h3 className="mb-3 text-lg font-bold">Title Controls</h3>
+        <h3 className="mb-3 text-lg font-bold">Tùy chỉnh tiêu đề</h3>
         <div className="grid gap-3">
-          <div><label className="label">Title overlay</label><select className="select-ghost" value={renderOptions.title_mode} onChange={e => updateOptions({ title_mode: e.target.value as RenderOptions['title_mode'] })}><option value="auto">Auto from JSON title</option><option value="custom">Custom title</option><option value="none">Off</option></select></div>
-          {renderOptions.title_mode === 'custom' && <div><label className="label">Custom title</label><textarea className="textarea min-h-[110px]" value={renderOptions.title_text} onChange={e => updateOptions({ title_text: e.target.value })} placeholder="Title hiển thị trên đầu video"/></div>}
+          <div><label className="label">Tiêu đề</label><select className="select-ghost" value={renderOptions.title_mode} onChange={e => updateOptions({ title_mode: e.target.value as RenderOptions['title_mode'] })}><option value="auto">Tự động từ dữ liệu video</option><option value="custom">Tiêu đề tùy chỉnh</option><option value="none">Tắt</option></select></div>
+          {renderOptions.title_mode === 'custom' && <div><label className="label">Nội dung tiêu đề</label><textarea className="textarea min-h-[110px]" value={renderOptions.title_text} onChange={e => updateOptions({ title_text: e.target.value })} placeholder="Nhập tiêu đề hiển thị trên video"/></div>}
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-1">
-            <div><label className="label">Style</label><select className="select-ghost" value={renderOptions.title_style} onChange={e => updateOptions({ title_style: e.target.value as RenderOptions['title_style'] })}><option value="breaking_yellow">Breaking + Yellow</option><option value="yellow_highlight">Yellow highlight</option><option value="dark_badge">Dark badge</option><option value="clean_white">Clean white</option></select></div>
-            <div><label className="label">Font size</label><select className="select-ghost" value={renderOptions.title_font_size} onChange={e => updateOptions({ title_font_size: e.target.value as RenderOptions['title_font_size'] })}><option value="auto">Auto</option><option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option></select></div>
+            <div><label className="label">Kiểu</label><select className="select-ghost" value={renderOptions.title_style} onChange={e => updateOptions({ title_style: e.target.value as RenderOptions['title_style'] })}><option value="breaking_yellow">Tin nóng + vàng</option><option value="yellow_highlight">Nền vàng nổi bật</option><option value="dark_badge">Nền tối</option><option value="clean_white">Chữ trắng đơn giản</option></select></div>
+            <div><label className="label">Cỡ chữ</label><select className="select-ghost" value={renderOptions.title_font_size} onChange={e => updateOptions({ title_font_size: e.target.value as RenderOptions['title_font_size'] })}><option value="auto">Tự động</option><option value="small">Nhỏ</option><option value="medium">Vừa</option><option value="large">Lớn</option></select></div>
           </div>
           <div><label className="label">Canh chữ</label><select className="select-ghost" value={renderOptions.title_text_align} onChange={e => updateOptions({ title_text_align: e.target.value as RenderOptions['title_text_align'] })}><option value="left">Trái</option><option value="center">Giữa</option><option value="right">Phải</option></select></div>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-1">
-            <div><label className="label">Max lines</label><select className="select-ghost" value={renderOptions.title_max_lines} onChange={e => updateOptions({ title_max_lines: Number(e.target.value) })}><option value={1}>1 dòng</option><option value={2}>2 dòng</option><option value={3}>3 dòng</option></select></div>
-            <div><label className="label">Chars / line</label><input className="input py-2" type="number" min={16} max={60} value={renderOptions.title_chars_per_line} onChange={e => updateOptions({ title_chars_per_line: Number(e.target.value) })}/></div>
+            <div><label className="label">Số dòng tối đa</label><select className="select-ghost" value={renderOptions.title_max_lines} onChange={e => updateOptions({ title_max_lines: Number(e.target.value) })}><option value={1}>1 dòng</option><option value={2}>2 dòng</option><option value={3}>3 dòng</option></select></div>
+            <div><label className="label">Ký tự mỗi dòng</label><input className="input py-2" type="number" min={16} max={60} value={renderOptions.title_chars_per_line} onChange={e => updateOptions({ title_chars_per_line: Number(e.target.value) })}/></div>
           </div>
-          <div><label className="label">Position</label><select className="select-ghost" value={renderOptions.title_position} onChange={e => updateOptions({ title_position: e.target.value as RenderOptions['title_position'] })}><option value="top">Top</option><option value="upper_third">Upper third</option><option value="center">Center</option><option value="bottom">Bottom</option></select></div>
+          <div><label className="label">Vị trí</label><select className="select-ghost" value={renderOptions.title_position} onChange={e => updateOptions({ title_position: e.target.value as RenderOptions['title_position'] })}><option value="top">Trên</option><option value="upper_third">1/3 phía trên</option><option value="center">Giữa</option><option value="bottom">Dưới</option></select></div>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-1">
-            <div><label className="label">Badge</label><select className="select-ghost" value={renderOptions.title_badge_mode} onChange={e => updateOptions({ title_badge_mode: e.target.value as RenderOptions['title_badge_mode'] })}><option value="none">Không badge</option><option value="auto">Auto badge</option><option value="custom">Custom badge</option></select></div>
-            {renderOptions.title_badge_mode === 'custom' && <div><label className="label">Badge text</label><input className="input" value={renderOptions.title_badge_text} onChange={e => updateOptions({ title_badge_text: e.target.value })} placeholder="BODYCAM"/></div>}
-          </div>
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-1">
-            <div><label className="label">Title duration</label><select className="select-ghost" value={renderOptions.title_show_duration} onChange={e => updateOptions({ title_show_duration: e.target.value as RenderOptions['title_show_duration'] })}><option value="full">Xuyên suốt video</option><option value="intro_only">Chỉ intro</option></select></div>
-            {renderOptions.title_show_duration === 'intro_only' && <div><label className="label">Intro seconds</label><input className="input py-2" type="number" min={1} max={30} value={renderOptions.title_intro_seconds} onChange={e => updateOptions({ title_intro_seconds: Number(e.target.value) })}/></div>}
+            <div><label className="label">Huy hiệu</label><select className="select-ghost" value={renderOptions.title_badge_mode} onChange={e => updateOptions({ title_badge_mode: e.target.value as RenderOptions['title_badge_mode'] })}><option value="none">Không dùng huy hiệu</option><option value="auto">Huy hiệu tự động</option><option value="custom">Huy hiệu tùy chỉnh</option></select></div>
+            {renderOptions.title_badge_mode === 'custom' && <div><label className="label">Nội dung huy hiệu</label><input className="input" value={renderOptions.title_badge_text} onChange={e => updateOptions({ title_badge_text: e.target.value })} placeholder="BODYCAM"/></div>}
           </div>
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-1">
-            <div><label className="label">Header height</label><input className="input py-2" type="number" min={0} max={360} value={renderOptions.title_header_height} onChange={e => updateOptions({ title_header_height: Number(e.target.value) })} placeholder="0 = auto"/></div>
-            <div><label className="label">Safe margin</label><input className="input py-2" type="number" min={0} max={240} value={renderOptions.title_safe_margin} onChange={e => updateOptions({ title_safe_margin: Number(e.target.value) })} placeholder="0 = auto"/></div>
+            <div><label className="label">Thời lượng tiêu đề</label><select className="select-ghost" value={renderOptions.title_show_duration} onChange={e => updateOptions({ title_show_duration: e.target.value as RenderOptions['title_show_duration'] })}><option value="full">Xuyên suốt video</option><option value="intro_only">Chỉ đầu video</option></select></div>
+            {renderOptions.title_show_duration === 'intro_only' && <div><label className="label">Số giây đầu</label><input className="input py-2" type="number" min={1} max={30} value={renderOptions.title_intro_seconds} onChange={e => updateOptions({ title_intro_seconds: Number(e.target.value) })}/></div>}
           </div>
-          <div><label className="label">Output ratio source</label><select className="select-ghost" value={renderOptions.vertical_mode} onChange={e => updateOptions({ vertical_mode: e.target.value as RenderOptions['vertical_mode'] })}><option value="none">16:9 / giữ ngang</option><option value="blur_fit">9:16 blur fit</option><option value="center_crop">9:16 center crop</option></select></div>
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-1">
+            <div><label className="label">Chiều cao vùng đầu</label><input className="input py-2" type="number" min={0} max={360} value={renderOptions.title_header_height} onChange={e => updateOptions({ title_header_height: Number(e.target.value) })} placeholder="0 = tự động"/></div>
+            <div><label className="label">Lề an toàn</label><input className="input py-2" type="number" min={0} max={240} value={renderOptions.title_safe_margin} onChange={e => updateOptions({ title_safe_margin: Number(e.target.value) })} placeholder="0 = tự động"/></div>
+          </div>
+          <div><label className="label">Tỉ lệ đầu ra</label><select className="select-ghost" value={renderOptions.vertical_mode} onChange={e => updateOptions({ vertical_mode: e.target.value as RenderOptions['vertical_mode'] })}><option value="none">16:9 / giữ ngang</option><option value="blur_fit">9:16 nền mờ</option><option value="center_crop">9:16 cắt giữa</option></select></div>
           <label className="flex cursor-pointer items-center gap-2 rounded-xl border border-white/10 bg-slate-950/40 p-3 text-sm">
             <input type="checkbox" checked={showGuides} onChange={e => setShowGuides(e.target.checked)}/>
             {showGuides ? <Eye size={16}/> : <EyeOff size={16}/>}
-            Show guides
+            Hiện khung hướng dẫn
           </label>
-          <div className="rounded-2xl border border-white/10 bg-slate-950/50 p-3 text-xs text-slate-400">Auto title lấy từ <code>metadata.video_title</code>. Nếu preview báo title bị rút gọn, hãy tăng max lines, tăng chars/line hoặc giảm font size.</div>
+          <div className="rounded-2xl border border-white/10 bg-slate-950/50 p-3 text-xs text-slate-400">Tiêu đề tự động lấy từ dữ liệu video. Nếu bị rút gọn, hãy tăng số dòng, tăng ký tự mỗi dòng hoặc giảm cỡ chữ.</div>
         </div>
       </aside>
     </div>
@@ -296,11 +296,11 @@ function estimateLayout(options: RenderOptions, width: number, height: number): 
 }
 
 function fallbackWrapTitle(options: RenderOptions) {
-  const rawTitle = options.title_text || 'Title preview';
+  const rawTitle = options.title_text || 'Xem trước tiêu đề';
   const maxLines = Math.max(1, Math.min(3, Number(options.title_max_lines) || 2));
   const charsPerLine = Math.max(16, Math.min(60, Number(options.title_chars_per_line) || 34));
   const words = rawTitle.trim().split(/\s+/).filter(Boolean);
-  if (!words.length) return ['Title preview'];
+  if (!words.length) return ['Xem trước tiêu đề'];
   const result: string[] = [];
   let current = '';
   for (const word of words) {

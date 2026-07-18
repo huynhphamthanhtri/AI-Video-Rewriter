@@ -11,7 +11,7 @@ import json
 import subprocess
 from threading import Lock
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,6 @@ from app.services.updater_service import UpdaterError, compare_versions, get_loc
 from app.services.gemini_automation import gemini_service, GeminiAutomationService
 from app.services.batch_pipeline import batch_service
 from app.schemas.prompt import GeminiAutoSubmitRequest, GeminiAutoSubmitResponse, GeminiAutoSubmitStatusResponse
-from app.services.prompt_generator import PromptGenerator
 
 router = APIRouter()
 RUNTIME_STARTED_AT = time.time()
@@ -125,6 +124,12 @@ def _resolve_duration_auth(
     """
     downloader = VideoDownloader()
     effective_cookies_file = cookies_file or settings.ytdlp_cookies_file
+    if not effective_cookies_file:
+        saved = _saved_cookies_path()
+        if saved.exists():
+            health = analyze_ytdlp_cookie_file(saved)
+            if health.valid:
+                effective_cookies_file = str(saved)
     repo_profile = str(ROOT_DIR / "data" / "gemini_profile")
     effective_cookies_from_browser = (
         cookies_from_browser
@@ -262,6 +267,31 @@ def _cli_duration(
         return None, str(exc)[:3000], None, None, cmd_str
 
 
+def _ffprobe_direct_media_duration(url: str) -> int | None:
+    if Path(urlparse(url).path).suffix.lower() not in ALLOWED_BLUR_VIDEO_EXTENSIONS:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                settings.ffprobe_binary,
+                "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                url,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            duration = float(result.stdout.strip())
+            return max(1, int(round(duration))) if duration > 0 else None
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
 def _get_youtube_duration_seconds(
     url: str,
     cookies_file: str | None = None,
@@ -298,7 +328,15 @@ def _get_youtube_duration_seconds(
     if cli_duration is not None:
         return cli_duration
 
-    logger.warning("yt-dlp duration extraction failed for %s (Python API + CLI both failed)", url)
+    direct_duration = _ffprobe_direct_media_duration(url)
+    if direct_duration is not None:
+        _write_duration_diagnostics(
+            url, "ffprobe_direct_media", resolved_cookies_file, resolved_cookies_from_browser,
+            direct_duration, None,
+        )
+        return direct_duration
+
+    logger.warning("Duration extraction failed for %s (Python API, CLI, and direct-media ffprobe)", url)
     return None
 
 
@@ -1791,10 +1829,9 @@ async def gemini_auto_submit(payload: GeminiAutoSubmitRequest):
     }
 
     gemini_service.start(task_id, prompt, render_payload, payload.user_data_dir, headless=payload.headless,
-                         thinking_mode=payload.gemini_thinking_mode,
-                         analysis_mode=payload.gemini_analysis_mode,
-                         form_data=form_data,
-                         dry_run=payload.gemini_dry_run)
+                          thinking_mode=payload.gemini_thinking_mode,
+                          form_data=form_data,
+                          dry_run=payload.gemini_dry_run)
     return GeminiAutoSubmitResponse(task_id=task_id, prompt_text=prompt)
 
 
@@ -1852,7 +1889,6 @@ async def gemini_batch_auto_submit(payload: GeminiAutoSubmitRequest):
             user_data_dir=payload.user_data_dir,
             headless=payload.headless,
             gemini_thinking_mode=payload.gemini_thinking_mode,
-            gemini_analysis_mode=payload.gemini_analysis_mode,
         )
         return BatchAutoSubmitResponse(**batch.model_dump())
     except ValueError as exc:

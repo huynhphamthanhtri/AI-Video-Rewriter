@@ -38,9 +38,4 @@ class TimestampedSrtModel(BaseModel):
     _validate_end = field_validator("end")(ensure_srt_timestamp)
 
 
-class TimestampedClipModel(BaseModel):
-    start: str
-    end: str
 
-    _validate_start = field_validator("start")(ensure_clip_timestamp)
-    _validate_end = field_validator("end")(ensure_clip_timestamp)

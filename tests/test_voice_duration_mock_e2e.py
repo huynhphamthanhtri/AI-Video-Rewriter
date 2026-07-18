@@ -71,7 +71,7 @@ def _payload(title: str, source_path: Path) -> GeminiPayloadSchema:
         "sources": [{"source_id": "source_1", "local_video_path": str(source_path)}],
         "rewrite_script": {"full_text": "Xin chào"},
         "srt": [{"index": 1, "start": "00:00:00,000", "end": "00:00:04,000", "text": "Câu kiểm thử"}],
-        "video_segments": [{"segment_id": 1, "order": 1, "source_id": "source_1", "source_start": "00:00:00.000", "source_end": "00:00:04.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu", "importance_score": 95}],
+        "video_segments": [{"segment_id": 1, "order": 1, "source_id": "source_1", "source_start": "00:00:00.000", "source_end": "00:00:04.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu"}],
     })
 
 

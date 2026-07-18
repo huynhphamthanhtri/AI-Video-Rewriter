@@ -11,6 +11,7 @@ from app.schemas.render import GeminiPayloadSchema, RenderOptions, clip_timestam
 
 ACTION_CONNECTORS = {"then", "and", "after", "before", "finally", "next", "but", "while", "rồi", "sau đó", "tiếp theo"}
 MAX_SAFE_VOICEOVER_EXTEND_SECONDS = 5.0
+AUTO_FIX_DURATION_TOLERANCE_SECONDS = 0.25
 MAX_AUTO_FIX_SRT_OVERLAP_SECONDS = 0.5
 MAX_AUTO_FIX_SRT_OVERLAP_RATIO = 0.1
 STOPWORDS = {"the", "a", "an", "and", "or", "but", "to", "of", "in", "on", "at", "for", "with", "is", "are", "it", "this", "that", "he", "she", "they", "his", "her", "their", "và", "là", "của", "cho", "trong", "với", "một", "các", "đang"}
@@ -346,7 +347,10 @@ class JsonValidator:
             if subtitle_duration <= 0:
                 continue
             source_duration = source_end_seconds - source_start_seconds
-            shortage = subtitle_duration - source_duration
+            duration_delta = subtitle_duration - source_duration
+            if abs(duration_delta) <= AUTO_FIX_DURATION_TOLERANCE_SECONDS:
+                continue
+            shortage = duration_delta
             if trim_only and source_duration <= subtitle_duration and not (0 < shortage <= MAX_SAFE_VOICEOVER_EXTEND_SECONDS):
                 continue
             segment["source_end"] = seconds_to_clip_timestamp(source_start_seconds + subtitle_duration)

@@ -88,7 +88,7 @@ def test_render_pipeline(tmp_path: Path, monkeypatch):
         "metadata": {"video_title": "Rich Man Mocks Mom & Son | @DramatizeMe", "rewrite_style": "Viral", "target_audience": "Đại chúng", "tone": "Năng lượng cao", "target_duration": "1-3 phút", "hashtags": ["#drama", "#remake"]},
         "rewrite_script": {"full_text": "Xin chào"},
         "srt": [{"index": 1, "start": "00:00:00,000", "end": "00:00:03,000", "text": "Xin chào"}],
-        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu", "importance_score": 95}],
+        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu"}],
     })
     pipeline = RenderPipeline(DummyDownloader(), DummyCutter(), DummyConcat(), DummyBurner())
     result = pipeline.render(payload, "https://youtube.com/watch?v=x", None, True, job_id="test-job-1")
@@ -217,7 +217,7 @@ def test_render_pipeline_passes_uploaded_cookies_file(tmp_path: Path, monkeypatc
         "metadata": {"video_title": "Cookies Test", "rewrite_style": "Drama", "target_audience": "Đại chúng", "tone": "Hài hước", "target_duration": "1-3 phút"},
         "rewrite_script": {"full_text": "Xin chào"},
         "srt": [{"index": 1, "start": "00:00:00,000", "end": "00:00:03,000", "text": "Xin chào"}],
-        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu", "importance_score": 95}],
+        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu"}],
     })
     downloader = DummyDownloader()
     pipeline = RenderPipeline(downloader, DummyCutter(), DummyConcat(), DummyBurner())
@@ -237,7 +237,7 @@ def test_render_pipeline_passes_user_data_dir_to_downloader(tmp_path: Path, monk
         "metadata": {"video_title": "Profile Test", "rewrite_style": "Drama", "target_audience": "Đại chúng", "tone": "Hài hước", "target_duration": "1-3 phút"},
         "rewrite_script": {"full_text": "Xin chào"},
         "srt": [{"index": 1, "start": "00:00:00,000", "end": "00:00:03,000", "text": "Xin chào"}],
-        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu", "importance_score": 95}],
+        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu"}],
     })
     downloader = DummyDownloader()
     pipeline = RenderPipeline(downloader, DummyCutter(), DummyConcat(), DummyBurner())
@@ -351,7 +351,7 @@ def test_render_pipeline_rejects_cookies_file_outside_upload_dir(tmp_path: Path,
         "metadata": {"video_title": "Cookies Test", "rewrite_style": "Drama", "target_audience": "Đại chúng", "tone": "Hài hước", "target_duration": "1-3 phút"},
         "rewrite_script": {"full_text": "Xin chào"},
         "srt": [{"index": 1, "start": "00:00:00,000", "end": "00:00:03,000", "text": "Xin chào"}],
-        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu", "importance_score": 95}],
+        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu"}],
     })
     pipeline = RenderPipeline(DummyDownloader(), DummyCutter(), DummyConcat(), DummyBurner())
 
@@ -372,7 +372,7 @@ def test_render_pipeline_allows_local_video_only_under_configured_dir(tmp_path: 
         "metadata": {"video_title": "Local Video", "rewrite_style": "Drama", "target_audience": "Đại chúng", "tone": "Hài hước", "target_duration": "1-3 phút"},
         "rewrite_script": {"full_text": "Xin chào"},
         "srt": [{"index": 1, "start": "00:00:00,000", "end": "00:00:03,000", "text": "Xin chào"}],
-        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu", "importance_score": 95}],
+        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu"}],
     })
     pipeline = RenderPipeline(DummyDownloader(), DummyCutter(), DummyConcat(), DummyBurner())
 
@@ -393,7 +393,7 @@ def test_render_pipeline_rejects_local_video_outside_configured_dir(tmp_path: Pa
         "metadata": {"video_title": "Local Video", "rewrite_style": "Drama", "target_audience": "Đại chúng", "tone": "Hài hước", "target_duration": "1-3 phút"},
         "rewrite_script": {"full_text": "Xin chào"},
         "srt": [{"index": 1, "start": "00:00:00,000", "end": "00:00:03,000", "text": "Xin chào"}],
-        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu", "importance_score": 95}],
+        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu"}],
     })
     pipeline = RenderPipeline(DummyDownloader(), DummyCutter(), DummyConcat(), DummyBurner())
 
@@ -410,7 +410,7 @@ def test_render_pipeline_applies_vertical_blur_fit(tmp_path: Path, monkeypatch):
         "metadata": {"video_title": "Vertical Test", "rewrite_style": "Drama", "target_audience": "Đại chúng", "tone": "Hài hước", "target_duration": "1-3 phút"},
         "rewrite_script": {"full_text": "Xin chào"},
         "srt": [{"index": 1, "start": "00:00:00,000", "end": "00:00:03,000", "text": "Xin chào"}],
-        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu", "importance_score": 95}],
+        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu"}],
     })
     burner = DummyBurner()
     transformer = DummyTransformer()
@@ -444,7 +444,7 @@ def test_render_pipeline_keep_all_preserves_intermediates(tmp_path: Path, monkey
         "metadata": {"video_title": "Keep All Test", "rewrite_style": "Drama", "target_audience": "Đại chúng", "tone": "Hài hước", "target_duration": "1-3 phút"},
         "rewrite_script": {"full_text": "Xin chào"},
         "srt": [{"index": 1, "start": "00:00:00,000", "end": "00:00:03,000", "text": "Xin chào"}],
-        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu", "importance_score": 95}],
+        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu"}],
     })
     burner = DummyBurner()
     transformer = DummyTransformer()
@@ -470,7 +470,7 @@ def test_render_pipeline_applies_center_crop_without_burn(tmp_path: Path, monkey
         "metadata": {"video_title": "Crop Test", "rewrite_style": "Drama", "target_audience": "Đại chúng", "tone": "Hài hước", "target_duration": "1-3 phút"},
         "rewrite_script": {"full_text": "Xin chào"},
         "srt": [{"index": 1, "start": "00:00:00,000", "end": "00:00:03,000", "text": "Xin chào"}],
-        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu", "importance_score": 95}],
+        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu"}],
     })
     burner = DummyBurner()
     transformer = DummyTransformer()
@@ -498,7 +498,7 @@ def test_render_pipeline_applies_video_speed_without_unbound_metadata(tmp_path: 
         "metadata": {"video_title": "Speed Test", "rewrite_style": "Drama", "target_audience": "Đại chúng", "tone": "Hài hước", "target_duration": "1-3 phút"},
         "rewrite_script": {"full_text": "Xin chào"},
         "srt": [{"index": 1, "start": "00:00:00,000", "end": "00:00:04,000", "text": "Xin chào"}],
-        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:04.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu", "importance_score": 95}],
+        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:04.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu"}],
     })
     captured: dict[str, float | None] = {}
 
@@ -523,12 +523,40 @@ def test_render_pipeline_applies_video_speed_without_unbound_metadata(tmp_path: 
     assert result["output_duration_seconds"] == "4.000000"
 
 
+def test_video_cutter_applies_soft_trim_required_duration(tmp_path: Path, monkeypatch):
+    from app.schemas.render import SegmentPlanItem
+    from app.services import video_tools
+
+    payload = GeminiPayloadSchema.model_validate({
+        "metadata": {"video_title": "Soft Trim", "rewrite_style": "Drama", "target_audience": "all", "tone": "neutral", "target_duration": "short"},
+        "rewrite_script": {"full_text": "test"},
+        "srt": [{"index": 1, "start": "00:00:00,000", "end": "00:00:08,000", "text": "test"}],
+        "video_segments": [{"segment_id": 1, "order": 1, "source_id": "source_1", "source_start": "00:00:00.000", "source_end": "00:00:08.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "test"}],
+    })
+    plan = SegmentPlanItem(segment_id=1, scene_duration=8.0, natural_voice_duration=4.0, required_duration=4.5, extend_seconds=0.0, decision="sync_video_soft_trim", source_id="source_1", source_remaining_seconds=12.0, speed_factor=1.0, video_speed_factor=1.15, duration_delta_seconds=-3.5)
+    captured = {}
+
+    def fake_run(cmd_builder, *args, **kwargs):
+        cmd = cmd_builder(video_tools.CPU_ENCODER)
+        captured["input_duration"] = float(cmd[cmd.index("-t") + 1])
+        Path(cmd[-1]).write_bytes(b"clip")
+        return video_tools.CPU_ENCODER
+
+    monkeypatch.setattr(video_tools, "run_ffmpeg_with_encoder_fallback", fake_run)
+    monkeypatch.setattr(video_tools, "calculate_segment_parallelism", lambda *args: (1, None))
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    video_tools.VideoCutter().cut({"source_1": source}, payload, tmp_path / "clips", render_options=RenderOptions(), segment_plans=[plan])
+
+    assert captured["input_duration"] == pytest.approx(4.5 * 1.15)
+
+
 def test_title_overlay_respects_line_options():
     payload = GeminiPayloadSchema.model_validate({
         "metadata": {"video_title": "A very long localized title for preview tuning", "rewrite_style": "Drama", "target_audience": "Đại chúng", "tone": "Hài hước", "target_duration": "1-3 phút"},
         "rewrite_script": {"full_text": "Xin chào"},
         "srt": [{"index": 1, "start": "00:00:00,000", "end": "00:00:03,000", "text": "Xin chào"}],
-        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu", "importance_score": 95}],
+        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu"}],
     })
 
     title = TitleOverlay().resolve_title(payload, RenderOptions(title_max_lines=1, title_chars_per_line=18))
@@ -542,7 +570,7 @@ def test_title_overlay_auto_badge_for_cops():
         "metadata": {"video_title": "Police Bodycam Case", "rewrite_style": "Điều tra", "target_audience": "Đại chúng", "tone": "Nghiêm túc", "target_duration": "1-3 phút", "narrator_persona": "detective"},
         "rewrite_script": {"full_text": "Xin chào"},
         "srt": [{"index": 1, "start": "00:00:00,000", "end": "00:00:03,000", "text": "Xin chào"}],
-        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu", "importance_score": 95}],
+        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu"}],
     })
 
     badge = TitleOverlay().resolve_badge(payload, RenderOptions(title_badge_mode="auto"))
@@ -557,7 +585,7 @@ def test_title_overlay_builds_breaking_yellow_filter(tmp_path: Path, monkeypatch
         "metadata": {"video_title": "Police Bodycam Case", "rewrite_style": "Điều tra", "target_audience": "Đại chúng", "tone": "Nghiêm túc", "target_duration": "1-3 phút", "narrator_persona": "detective"},
         "rewrite_script": {"full_text": "Xin chào"},
         "srt": [{"index": 1, "start": "00:00:00,000", "end": "00:00:03,000", "text": "Xin chào"}],
-        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu", "importance_score": 95}],
+        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu"}],
     })
     input_path = tmp_path / "input.mp4"
     output_path = tmp_path / "output.mp4"
@@ -602,8 +630,8 @@ def test_render_pipeline_downloads_and_cuts_multiple_sources(tmp_path: Path, mon
             {"index": 2, "start": "00:00:03,000", "end": "00:00:06,000", "text": "Tạm biệt"},
         ],
         "video_segments": [
-            {"segment_id": 1, "order": 1, "source_id": "source_1", "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "A", "importance_score": 95},
-            {"segment_id": 2, "order": 2, "source_id": "source_2", "source_start": "00:00:10.000", "source_end": "00:00:13.000", "subtitle_start": 2, "subtitle_end": 2, "scene_description": "B", "importance_score": 95},
+            {"segment_id": 1, "order": 1, "source_id": "source_1", "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "A"},
+            {"segment_id": 2, "order": 2, "source_id": "source_2", "source_start": "00:00:10.000", "source_end": "00:00:13.000", "subtitle_start": 2, "subtitle_end": 2, "scene_description": "B"},
         ],
     })
     downloader = DummyDownloader()
@@ -629,7 +657,7 @@ def test_render_pipeline_sanitizes_markdown_source_urls(tmp_path: Path, monkeypa
         "sources": [{"source_id": "source_1", "youtube_url": "[https://www.youtube.com/watch?v=j9ZJmUUivVI](https://www.youtube.com/watch?v=j9ZJmUUivVI)", "label": "A"}],
         "rewrite_script": {"full_text": "Xin chào"},
         "srt": [{"index": 1, "start": "00:00:00,000", "end": "00:00:03,000", "text": "Xin chào"}],
-        "video_segments": [{"segment_id": 1, "order": 1, "source_id": "source_1", "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "A", "importance_score": 95}],
+        "video_segments": [{"segment_id": 1, "order": 1, "source_id": "source_1", "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "A"}],
     })
     downloader = DummyDownloader()
     pipeline = RenderPipeline(downloader, DummyCutter(), DummyConcat(), DummyBurner())
@@ -648,7 +676,7 @@ def test_render_pipeline_exports_srt_only_without_video_source(tmp_path: Path, m
         "metadata": {"video_title": "SRT Only", "rewrite_style": "Drama", "target_audience": "Đại chúng", "tone": "Hài hước", "target_duration": "1-3 phút"},
         "rewrite_script": {"full_text": "Xin chào"},
         "srt": [{"index": 1, "start": "00:00:00,000", "end": "00:00:03,000", "text": "Xin chào"}],
-        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu", "importance_score": 95}],
+        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu"}],
     })
     downloader = DummyDownloader()
     cutter = DummyCutter()
@@ -672,7 +700,7 @@ def test_render_request_allows_srt_only_without_video_source():
             "metadata": {"video_title": "SRT Only", "rewrite_style": "Drama", "target_audience": "Đại chúng", "tone": "Hài hước", "target_duration": "1-3 phút"},
             "rewrite_script": {"full_text": "Xin chào"},
             "srt": [{"index": 1, "start": "00:00:00,000", "end": "00:00:03,000", "text": "Xin chào"}],
-            "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu", "importance_score": 95}],
+            "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu"}],
         },
         "subtitle_mode": "srt_only",
     })
@@ -739,7 +767,8 @@ def test_require_tts_ready_raises_when_not_installed(monkeypatch):
 def test_require_tts_ready_passes_when_installed(monkeypatch):
     from app.api.routes import _require_tts_ready
 
-    monkeypatch.setattr("app.api.routes.edge_tts_status", lambda: {"status": "ready", "engine": "edge_tts", "message": "Sẵn sàng."})
+    status = {"status": "ready", "engine": "edge_tts", "message": "Sẵn sàng."}
+    monkeypatch.setattr("app.api.routes.edge_tts_status", lambda: status)
 
     _require_tts_ready()
 
@@ -915,7 +944,7 @@ async def test_validate_without_render_marks_done_and_does_not_submit_render():
         "metadata": {"video_title": "A", "rewrite_style": "Viral", "target_audience": "Đại chúng", "tone": "Năng lượng cao", "target_duration": "1-3 phút"},
         "rewrite_script": {"full_text": "Xin chào"},
         "srt": [{"index": 1, "start": "00:00:00,000", "end": "00:00:03,000", "text": "Xin chào"}],
-        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu", "importance_score": 95}],
+        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu"}],
     }
 
     await svc._validate_without_render(task, json.dumps(payload), {"render_options": {"tts_mode": "none"}})

@@ -2,7 +2,7 @@
 
 import { Toaster, toast } from 'sonner';
 
-import { Bell, Copy, Download, ExternalLink, Film, FolderCog, FolderOpen, KeyRound, Loader2, Play, Plus, Sparkles, Trash2, Upload, Wand2 } from 'lucide-react';
+import { Bell, Copy, Download, ExternalLink, Film, FolderOpen, KeyRound, Loader2, Play, Plus, Sparkles, Trash2, Upload, Wand2 } from 'lucide-react';
 
 import { activateLicense, applyRenderJobBlur, blurPreviewUrl, cancelAutoPipeline, cancelBatch, checkForUpdates, cleanupFinalVideos, cleanupStorage, clearLicense, connectAutoPipelineWS, deleteSavedCookies, fetchAutoPipelineStatus, fetchBatchProgress, fetchFinalVideosPath, fetchGeminiSessionStatus, fetchLicenseStatus, fetchRenderJob, fetchRenderPreferences, fetchRuntimeHealth, fetchSavedCookies, fetchStorageStats, fetchTtsStatus, fetchTtsVoices, fileDownloadUrl, launchUpdater, openGeminiBrowser, openOutputFolder, saveRenderPreferences, skipRenderJobBlur, startAutoPipeline, startBatchAutoPipeline, startRenderJob, unbindLicenseDevice, uploadCookies } from './api';
 import { BlurRegionEditor, BlurRegionSidebar, BlurTool } from './components/BlurTool';
@@ -27,7 +27,7 @@ import { TtsStudioPanel } from './components/TtsStudioPanel';
 import { targetLanguageOptions } from './constants/options';
 
 
-import type { AutoPipelineProgress as AutoPipelineProgressData, BatchProgress, BlurRegion, GeminiAnalysisMode, GeminiEdlPayload, GeminiSessionStatus, GeminiThinkingMode, LicenseStatus, OutputResolution, PromptForm, RenderJobStatus, RenderOptions, RenderQuality, RuntimeHealth, StorageCleanupResponse, StorageStats, SubtitleMode, TtsVoice, UpdateCheckResponse, VerticalMode } from './types';
+import type { AutoPipelineProgress as AutoPipelineProgressData, BatchProgress, BlurRegion, GeminiEdlPayload, GeminiSessionStatus, GeminiThinkingMode, LicenseStatus, OutputResolution, PromptForm, RenderJobStatus, RenderOptions, RenderQuality, RuntimeHealth, StorageCleanupResponse, StorageStats, SubtitleMode, TtsVoice, UpdateCheckResponse, VerticalMode } from './types';
 import type { BlurRegionLocal } from './components/BlurTool';
 
 import { downloadTextFile } from './utils/download';
@@ -93,7 +93,7 @@ function syncVoiceForLanguage(language: string, options: RenderOptions): RenderO
 }
 
 
-const renderOptionLabels: Partial<Record<keyof RenderOptions, string>> = { tts_mode: 'TTS voiceover', tts_persona: 'TTS persona', tts_voice_region: 'Vùng miền', tts_voice_gender: 'Giới tính', tts_voice_id: 'Giọng cụ thể', tts_voice_mode: 'Voice mode', tts_emotion: 'Emotion', tts_max_speed: 'Max speed', original_audio_mode: 'Audio gốc', original_audio_volume: 'Volume audio gốc', voiceover_volume: 'Volume voiceover', video_speed: 'Video speed', artifact_retention: 'Output files', title_mode: 'Title mode', title_style: 'Title style', title_position: 'Title position', title_text_align: 'Canh chữ title', title_show_duration: 'Thời lượng title', title_badge_mode: 'Title badge' };
+const renderOptionLabels: Partial<Record<keyof RenderOptions, string>> = { tts_mode: 'Giọng đọc', tts_persona: 'Cá tính giọng', tts_voice_region: 'Vùng miền', tts_voice_gender: 'Giới tính', tts_voice_id: 'Giọng cụ thể', tts_voice_mode: 'Chế độ giọng', tts_emotion: 'Cảm xúc', tts_max_speed: 'Tốc độ tối đa', original_audio_mode: 'Audio gốc', original_audio_volume: 'Âm lượng audio gốc', voiceover_volume: 'Âm lượng giọng đọc', video_speed: 'Tốc độ video', artifact_retention: 'File xuất ra', title_mode: 'Chế độ tiêu đề', title_style: 'Kiểu tiêu đề', title_position: 'Vị trí tiêu đề', title_text_align: 'Canh chữ tiêu đề', title_show_duration: 'Thời lượng tiêu đề', title_badge_mode: 'Huy hiệu tiêu đề' };
 
 
 
@@ -250,7 +250,7 @@ function ProgressBar({ status }: { status: RenderJobStatus | null }) {
 
   const fillClass = status?.status === 'error' ? 'error' : status?.status === 'done' ? 'done' : '';
 
-  const segmentText = status?.total_segments ? `Đã cắt ${status.completed_segments ?? 0}/${status.total_segments} segments` : 'Đang chờ thông tin segment';
+  const segmentText = status?.total_segments ? `Đã xử lý ${status.completed_segments ?? 0}/${status.total_segments} đoạn` : 'Đang chờ thông tin đoạn';
 
 
 
@@ -260,7 +260,7 @@ function ProgressBar({ status }: { status: RenderJobStatus | null }) {
 
       <div>
 
-        <p className="text-xs uppercase tracking-wider text-slate-500">Render progress</p>
+        <p className="text-xs uppercase tracking-wider text-slate-500">Tiến trình dựng video</p>
 
         <h3 className="text-lg font-black text-white">{status?.step ?? 'Chưa bắt đầu'}</h3>
 
@@ -290,7 +290,7 @@ function ProgressBar({ status }: { status: RenderJobStatus | null }) {
 
     </div>
 
-    {status?.job_id && <p className="mt-2 break-all text-xs text-slate-500">Job: {status.job_id}</p>}
+    
 
   </div>;
 
@@ -318,7 +318,7 @@ export function App() {
 
   const [isRendering, setIsRendering] = useState(false);
 
-  const [subtitleMode, setSubtitleMode] = useState<SubtitleMode>('burn');
+  const [subtitleMode, setSubtitleMode] = useState<SubtitleMode>('none');
 
   const [renderOptions, setRenderOptions] = useState<RenderOptions>(defaultRenderOptions);
 
@@ -346,7 +346,6 @@ export function App() {
   const [geminiSessionStatus, setGeminiSessionStatus] = useState<GeminiSessionStatus | null>(null);
 
   const [geminiUserDataDir, setGeminiUserDataDir] = useState<string | null>(null);
-  const [geminiAnalysisMode, setGeminiAnalysisMode] = useState<GeminiAnalysisMode>('deep_analysis');
   const [geminiThinkingMode, setGeminiThinkingMode] = useState<GeminiThinkingMode>('extended');
 
   const [isOpeningBrowser, setIsOpeningBrowser] = useState(false);
@@ -558,7 +557,7 @@ export function App() {
 
           setIsAutoPipelineRunning(false);
 
-          toast.success('Batch Auto Pipeline hoàn tất!');
+          toast.success('Xử lý hàng loạt hoàn tất!');
 
           if (renderDoneBell) playRenderDoneBell();
 
@@ -706,7 +705,7 @@ export function App() {
 
     autoRenderPollCancelledRef.current = false;
 
-    const initial = { job_id: jobId, status: 'queued', step: 'Auto Render', message: 'Pipeline hoàn tất, đang chờ render...', progress: 0, completed_segments: 0, total_segments: null, started_at: null, updated_at: null, elapsed_seconds: null, estimated_total_seconds: null, remaining_seconds: null, result: null, errors: [] } satisfies RenderJobStatus;
+    const initial = { job_id: jobId, status: 'queued', step: 'Dựng video tự động', message: 'Pipeline hoàn tất, đang chờ render...', progress: 0, completed_segments: 0, total_segments: null, started_at: null, updated_at: null, elapsed_seconds: null, estimated_total_seconds: null, remaining_seconds: null, result: null, errors: [] } satisfies RenderJobStatus;
 
     setAutoRenderStatus(initial);
 
@@ -872,7 +871,6 @@ export function App() {
           user_data_dir: geminiUserDataDir || undefined,
           headless: !showBrowser,
           gemini_thinking_mode: geminiThinkingMode,
-          gemini_analysis_mode: geminiAnalysisMode,
 
         });
 
@@ -927,7 +925,7 @@ export function App() {
 
 
 
-      const res = await startAutoPipeline({ form_data: formPayload, ...renderPayload, headless: !showBrowser, gemini_thinking_mode: geminiThinkingMode, gemini_analysis_mode: geminiAnalysisMode });
+      const res = await startAutoPipeline({ form_data: formPayload, ...renderPayload, headless: !showBrowser, gemini_thinking_mode: geminiThinkingMode });
 
       setAutoPipelineProgress((prev: AutoPipelineProgressData | null) => prev ? { ...prev, task_id: res.task_id } : null);
 
@@ -1065,7 +1063,7 @@ export function App() {
 
     setRenderSteps(['running', 'idle', 'idle', 'idle']);
 
-    setRenderStatus({ job_id: '', status: 'queued', step: 'Render request', message: 'Đang gửi yêu cầu render...', progress: 0, completed_segments: 0, total_segments: jsonPayload.video_segments.length, errors: [] });
+    setRenderStatus({ job_id: '', status: 'queued', step: 'Gửi yêu cầu dựng video', message: 'Đang gửi yêu cầu render...', progress: 0, completed_segments: 0, total_segments: jsonPayload.video_segments.length, errors: [] });
 
 
 
@@ -1184,7 +1182,7 @@ export function App() {
     <main className="mx-auto max-w-7xl space-y-6 p-5">
       <header className="panel flex flex-col justify-between gap-4 md:flex-row md:items-center">
 
-        <div className="flex items-center gap-3"><div className="logo"><Sparkles size={24}/></div><div><h1 className="text-2xl font-black">AI Video Rewriter & Video Rebuilder</h1><p className="text-sm text-slate-400">EDL shot-based editing, Gemini JSON, async render progress</p></div></div>
+        <div className="flex items-center gap-3"><div className="logo"><Sparkles size={24}/></div><div><h1 className="text-2xl font-black">AI Video Rewriter & Video Rebuilder</h1><p className="text-sm text-slate-400">Tự động phân tích, tái cấu trúc và dựng video từ link YouTube</p></div></div>
 
         <Pill tone={renderStatus?.status === 'done' ? 'green' : renderStatus?.status === 'error' || renderStatus?.status === 'cancelled' ? 'red' : isRendering ? 'yellow' : 'cyan'}>{renderStatus?.status ?? 'idle'}</Pill>
 
@@ -1194,15 +1192,15 @@ export function App() {
 
       <div className="panel flex flex-wrap gap-2">
 
-        <button className={activeTab === 'workflow' ? 'btn-primary' : 'btn-secondary'} onClick={() => setActiveTab('workflow')}>Workflow dựng video</button>
+        <button className={activeTab === 'workflow' ? 'btn-primary' : 'btn-secondary'} onClick={() => setActiveTab('workflow')}>Làm video</button>
 
-        <button className={activeTab === 'blur' ? 'btn-primary' : 'btn-secondary'} onClick={() => setActiveTab('blur')}>Blur Tool</button>
+        <button className={activeTab === 'blur' ? 'btn-primary' : 'btn-secondary'} onClick={() => setActiveTab('blur')}>Làm mờ</button>
 
-        <button className={activeTab === 'title' ? 'btn-primary' : 'btn-secondary'} onClick={() => setActiveTab('title')}>Title Tool</button>
+        <button className={activeTab === 'title' ? 'btn-primary' : 'btn-secondary'} onClick={() => setActiveTab('title')}>Tiêu đề</button>
 
-        <button className={activeTab === 'tts' ? 'btn-primary' : 'btn-secondary'} onClick={() => setActiveTab('tts')}>Voiceover / TTS</button>
+        <button className={activeTab === 'tts' ? 'btn-primary' : 'btn-secondary'} onClick={() => setActiveTab('tts')}>Giọng đọc</button>
 
-        <button className={activeTab === 'tts-studio' ? 'btn-primary' : 'btn-secondary'} onClick={() => setActiveTab('tts-studio')}>Text to Speech</button>
+        <button className={activeTab === 'tts-studio' ? 'btn-primary' : 'btn-secondary'} onClick={() => setActiveTab('tts-studio')}>TTS Studio</button>
 
         <button className={`relative ${activeTab === 'maintenance' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => { setActiveTab('maintenance'); void loadStorageStats(); void loadRuntimeHealth(); void loadLicenseStatus(); }}>Bảo trì{updateAvailable && <span className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-green-500 text-[10px] font-bold text-white shadow-sm">!</span>}</button>
 
@@ -1228,8 +1226,8 @@ export function App() {
             {form.source_mode === 'single' ? <div className="mt-4"><label className="label">Link YouTube</label><input className="input" value={form.youtube_url} onChange={e => updateForm('youtube_url', e.target.value)} placeholder="https://www.youtube.com/watch?v=..."/></div> : <div className="mt-4"><label className="label">Danh sách link YouTube, mỗi dòng một link</label><textarea className="textarea min-h-[130px]" value={form.youtube_urls_text} onChange={e => { updateForm('youtube_urls_text', e.target.value); const first = parseYoutubeUrls(e.target.value)[0] ?? ''; updateForm('youtube_url', first); }} placeholder={'https://www.youtube.com/watch?v=...\nhttps://www.youtube.com/watch?v=...'}/></div>}
 
             <div className="mt-4"><label className="label">Hướng dẫn thêm cho Gemini (không bắt buộc)</label>
-              <p className="mt-1 text-xs text-slate-400">Gợi ý nhập: độ dài mong muốn (60-90s, 3-5 phút), giọng kể (hài hước/kịch tính/phóng sự/cảm xúc), nhịp dựng (nhanh/chậm/cắt mạnh cảnh chờ), góc khai thác (twist, phản ứng nhân vật, bài học), cảnh cần giữ/cắt.</p>
-              <textarea className="textarea min-h-[80px]" value={form.user_instruction} onChange={e => updateForm('user_instruction', e.target.value)} placeholder="Ví dụ: Video 90 giây, giọng kể kịch tính, cắt mạnh cảnh chờ, giữ cảnh cao trào."/></div>
+              <p className="mt-1 text-xs text-slate-400">Gợi ý: độ dài mong muốn (vd: 60-90s, 3-5 phút), giọng kể (vd: hài hước/kịch tính/phóng sự/cảm xúc), đối tượng mục tiêu (vd: giới trẻ/người mới/chuyên gia).</p>
+              <textarea className="textarea min-h-[80px]" value={form.user_instruction} onChange={e => updateForm('user_instruction', e.target.value)} placeholder="Ví dụ: Video 90 giây, giọng kể kịch tính, đối tượng là người mới bắt đầu."/></div>
             <div className="mt-4"><label className="label">Ngôn ngữ output</label>
 
               <select className="select-ghost" value={form.target_language} onChange={e => updateTargetLanguage(e.target.value)}>{targetLanguageOptions.map(v => <option key={v} value={v}>{v}</option>)}</select></div>
@@ -1312,7 +1310,7 @@ function LicenseGate({ licenseStatus, onActivate, onRefresh }: { licenseStatus: 
       <div className="mb-4 flex items-center gap-2 rounded-xl border border-white/10 bg-slate-950/40 p-3 text-sm">
         <span className="text-slate-400">Hardware ID:</span>
         <b className="flex-1 tracking-widest text-cyan-100">{licenseStatus.hardware_id}</b>
-        <button className="btn-mini" onClick={copyHardwareId}><Copy size={14}/>Copy</button>
+        <button className="btn-mini" onClick={copyHardwareId}><Copy size={14}/>Sao chép</button>
       </div>
       <div className="space-y-3">
         <label className="label">Nhập license key</label>
@@ -1339,14 +1337,6 @@ function LicenseGate({ licenseStatus, onActivate, onRefresh }: { licenseStatus: 
                   </span>;
 
                 })()}
-
-                <div className="flex items-center gap-2 text-xs text-slate-300">
-                  <span>Chế độ Gemini</span>
-                  <select className="select-ghost h-8 py-1 text-xs" value={geminiAnalysisMode} onChange={e => setGeminiAnalysisMode(e.target.value as GeminiAnalysisMode)} disabled={isAutoPipelineRunning}>
-                    <option value="deep_analysis">Phân tích sâu</option>
-                    <option value="fast">Nhanh</option>
-                  </select>
-                </div>
 
                 <div className="flex items-center gap-2 text-xs text-slate-300">
                   <span>Gemini thinking</span>
@@ -1388,7 +1378,7 @@ function LicenseGate({ licenseStatus, onActivate, onRefresh }: { licenseStatus: 
 
               <button className="btn-mini danger w-full" onClick={handleCancelAutoPipeline}>
 
-                Hủy Auto Pipeline
+                Hủy xử lý tự động
 
               </button>
 
@@ -1430,7 +1420,7 @@ function RenderPanel({ canRender, isRendering, steps, status, cookiesFile, subti
 
   const updateOptions = (patch: Partial<RenderOptions>) => onRenderOptionsChange({ ...renderOptions, ...patch });
 
-  return <Card><SectionTitle icon={Film} title="2. Render video" desc="Render async có thanh tiến trình %"/>
+  return <Card><SectionTitle icon={Film} title="2. Dựng video" desc="Dựng video và theo dõi tiến trình"/>
 
     <ProgressBar status={status}/>
 
@@ -1438,13 +1428,13 @@ function RenderPanel({ canRender, isRendering, steps, status, cookiesFile, subti
 
     <div className="mt-4 rounded-2xl border border-cyan-500/20 bg-cyan-500/10 p-4">
 
-      <h3 className="mb-3 font-bold">Render Options</h3>
+      <h3 className="mb-3 font-bold">Tùy chọn dựng video</h3>
 
       <div className="grid gap-3">
 
-        <div><label className="label">Subtitle output</label><select className="select-ghost" value={subtitleMode} onChange={e => onSubtitleModeChange(e.target.value as SubtitleMode)}><option value="burn">Xuất video + burn subtitle + file SRT</option><option value="none">Xuất video + file SRT, không burn subtitle</option><option value="srt_only">Chỉ xuất file SRT, không dựng video</option></select></div>
+        <div><label className="label">Phụ đề</label><select className="select-ghost" value={subtitleMode} onChange={e => onSubtitleModeChange(e.target.value as SubtitleMode)}><option value="burn">Xuất video có phụ đề + file SRT</option><option value="none">Xuất video + file SRT, không gắn phụ đề</option><option value="srt_only">Chỉ xuất file SRT</option></select></div>
 
-        <div><label className="label">Blur Review</label><select className="select-ghost" value={renderOptions.blur_mode} onChange={e => updateOptions({ blur_mode: e.target.value as RenderOptions['blur_mode'] })}><option value="none">Không blur - render thẳng final</option><option value="review">Dừng để chọn vùng blur trước khi burn subtitle/final</option></select></div>
+        <div><label className="label">Làm mờ</label><select className="select-ghost" value={renderOptions.blur_mode} onChange={e => updateOptions({ blur_mode: e.target.value as RenderOptions['blur_mode'] })}><option value="none">Không làm mờ, dựng video luôn</option><option value="review">Dừng để chọn vùng cần làm mờ trước khi xuất video</option></select></div>
 
         <TitleOverlayOptions renderOptions={renderOptions} jsonPayload={jsonPayload} onChange={updateOptions} onOpenTitleTool={onOpenTitleTool}/>
 
@@ -1452,28 +1442,28 @@ function RenderPanel({ canRender, isRendering, steps, status, cookiesFile, subti
 
         <SubtitleGallery renderOptions={renderOptions} onChange={updateOptions}/>
 
-        <div className="rounded-2xl border border-violet-500/20 bg-violet-500/10 p-4"><div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h4 className="font-bold">Voiceover / TTS</h4>{ttsStatus && <Pill tone={ttsStatus.status === 'ready' ? 'green' : 'yellow'}>{ttsStatus.status === 'ready' ? 'TTS ready' : 'TTS chưa cài'}</Pill>}</div>{ttsStatus && <p className="mb-3 text-xs text-slate-400">{ttsStatus.message}</p>}<div className="grid gap-3"><div><label className="label">TTS voiceover</label><select className="select-ghost" value={renderOptions.tts_mode} onChange={e => updateOptions({ tts_mode: e.target.value as RenderOptions['tts_mode'] })}><option value="none">Tắt TTS</option><option value="voiceover">Bật Edge TTS đọc theo srt[]</option></select></div>{renderOptions.tts_mode === 'voiceover' && <button className="btn-secondary w-full" onClick={onOpenTtsPanel}>Mở TTS Panel để tuỳ chỉnh giọng đọc</button>}</div></div>
-        <label className="flex items-center gap-2 rounded-xl border border-white/10 bg-slate-950/40 p-3 text-sm"><input type="checkbox" checked={renderDoneBell} onChange={e => onRenderDoneBellChange(e.target.checked)}/>Bật chuông lớn khi render xong</label>
+        <div className="rounded-2xl border border-violet-500/20 bg-violet-500/10 p-4"><div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h4 className="font-bold">Giọng đọc / TTS</h4>{ttsStatus && <Pill tone={ttsStatus.status === 'ready' ? 'green' : 'yellow'}>{ttsStatus.status === 'ready' ? 'Sẵn sàng' : 'TTS chưa cài'}</Pill>}</div>{ttsStatus && <p className="mb-3 text-xs text-slate-400">{ttsStatus.message}</p>}<div className="grid gap-3"><div><label className="label">Giọng đọc tự động</label><select className="select-ghost" value={renderOptions.tts_mode} onChange={e => updateOptions({ tts_mode: e.target.value as RenderOptions['tts_mode'] })}><option value="none">Tắt TTS</option><option value="voiceover">Bật giọng đọc theo phụ đề</option></select></div>{renderOptions.tts_mode === 'voiceover' && <button className="btn-secondary w-full" onClick={onOpenTtsPanel}>Mở phần Giọng đọc để tùy chỉnh</button>}</div></div>
+        <label className="flex items-center gap-2 rounded-xl border border-white/10 bg-slate-950/40 p-3 text-sm"><input type="checkbox" checked={renderDoneBell} onChange={e => onRenderDoneBellChange(e.target.checked)}/>Bật âm báo khi dựng xong</label>
 
-        <div><label className="label">Output files</label><select className="select-ghost" value={renderOptions.artifact_retention} onChange={e => updateOptions({ artifact_retention: e.target.value as RenderOptions['artifact_retention'] })}><option value="smart">Smart cleanup - giữ debug cần thiết, xóa video trung gian lớn</option><option value="keep_all">Keep all files - giữ mọi file để debug sâu</option></select></div>
+        <div><label className="label">File xuất ra</label><select className="select-ghost" value={renderOptions.artifact_retention} onChange={e => updateOptions({ artifact_retention: e.target.value as RenderOptions['artifact_retention'] })}><option value="smart">Tự động dọn - giữ file cần thiết, xóa video tạm lớn</option><option value="keep_all">Giữ tất cả file - dùng khi cần kiểm tra lỗi</option></select></div>
 
-        <div><label className="label">Render stability</label><select className="select-ghost" value={renderOptions.render_stability} onChange={e => updateOptions({ render_stability: e.target.value as RenderOptions['render_stability'] })}><option value="fast">Fast - nhanh hơn</option><option value="stable">Stable - khuyến nghị</option><option value="max_quality">Max Quality - đẹp hơn</option></select></div>
+        <div><label className="label">Độ ổn định</label><select className="select-ghost" value={renderOptions.render_stability} onChange={e => updateOptions({ render_stability: e.target.value as RenderOptions['render_stability'] })}><option value="fast">Nhanh - thời gian xử lý ngắn hơn</option><option value="stable">Ổn định - khuyến nghị</option><option value="max_quality">Chất lượng cao nhất</option></select></div>
 
-        <div><label className="label">Hardware acceleration</label><select className="select-ghost" value={renderOptions.video_encoder} onChange={e => updateOptions({ video_encoder: e.target.value as RenderOptions['video_encoder'] })}><option value="auto">Auto - ưu tiên GPU</option><option value="cpu">CPU only</option><option value="nvenc">NVIDIA NVENC</option><option value="qsv">Intel Quick Sync</option><option value="amf">AMD AMF</option></select></div>
+        <div><label className="label">Tăng tốc phần cứng</label><select className="select-ghost" value={renderOptions.video_encoder} onChange={e => updateOptions({ video_encoder: e.target.value as RenderOptions['video_encoder'] })}><option value="auto">Tự động - ưu tiên GPU</option><option value="cpu">Chỉ dùng CPU</option><option value="nvenc">NVIDIA NVENC</option><option value="qsv">Intel Quick Sync</option><option value="amf">AMD AMF</option></select></div>
 
-        <div><label className="label">Segment FPS</label><select className="select-ghost" value={renderOptions.segment_fps} onChange={e => updateOptions({ segment_fps: e.target.value as RenderOptions['segment_fps'] })}><option value="auto">Auto</option><option value="30">30fps</option><option value="60">60fps - sports/highlights</option></select></div>
+        <div><label className="label">FPS đoạn video</label><select className="select-ghost" value={renderOptions.segment_fps} onChange={e => updateOptions({ segment_fps: e.target.value as RenderOptions['segment_fps'] })}><option value="auto">Tự động</option><option value="30">30fps</option><option value="60">60fps - thể thao / highlight</option></select></div>
 
-        <div><label className="label">Tỉ lệ đầu ra</label><select className="select-ghost" value={renderOptions.vertical_mode} onChange={e => updateOptions({ vertical_mode: e.target.value as VerticalMode })}><option value="none">Giữ nguyên ngang</option><option value="blur_fit">Dọc 9:16 - Nền blur + video vuông 1:1</option><option value="center_crop">Dọc 9:16 - Center crop</option></select></div>
+        <div><label className="label">Tỉ lệ đầu ra</label><select className="select-ghost" value={renderOptions.vertical_mode} onChange={e => updateOptions({ vertical_mode: e.target.value as VerticalMode })}><option value="none">Giữ nguyên ngang</option><option value="blur_fit">Dọc 9:16 - Nền mờ + video vuông 1:1</option><option value="center_crop">Dọc 9:16 - Cắt giữa</option></select></div>
 
         <div className="grid gap-3 md:grid-cols-2">
 
-          <div><label className="label">Chất lượng render</label><select className="select-ghost" value={renderOptions.render_quality} onChange={e => updateOptions({ render_quality: e.target.value as RenderQuality })}><option value="fast">Fast - nhanh, file nhỏ</option><option value="balanced">Balanced - mặc định</option><option value="high">High - chất lượng cao</option></select></div>
+          <div><label className="label">Chất lượng render</label><select className="select-ghost" value={renderOptions.render_quality} onChange={e => updateOptions({ render_quality: e.target.value as RenderQuality })}><option value="fast">Nhanh - file nhỏ</option><option value="balanced">Cân bằng - mặc định</option><option value="high">Cao - chất lượng tốt hơn</option></select></div>
 
-          <div><label className="label">Độ phân giải</label><select className="select-ghost" value={renderOptions.output_resolution} onChange={e => updateOptions({ output_resolution: e.target.value as OutputResolution })}><option value="auto">Auto / Original</option><option value="720p">720p</option><option value="1080p">1080p</option></select></div>
+          <div><label className="label">Độ phân giải</label><select className="select-ghost" value={renderOptions.output_resolution} onChange={e => updateOptions({ output_resolution: e.target.value as OutputResolution })}><option value="auto">Tự động / gốc</option><option value="720p">720p</option><option value="1080p">1080p</option></select></div>
 
         </div>
 
-        <div><label className="label">Tốc độ video</label><select className="select-ghost" value={renderOptions.video_speed} onChange={e => updateOptions({ video_speed: Number(e.target.value) })}><option value={1.0}>1.0x — Bình thường</option><option value={1.1}>1.1x — Hơi nhanh</option><option value={1.2}>1.2x — Nhanh hơn</option><option value={1.3}>1.3x — Nhanh</option><option value={1.5}>1.5x — Rất nhanh</option></select><p className="mt-1 text-xs text-slate-400">Tăng tốc video cuối bằng setpts+atempo, giữ nguyên pitch. Áp dụng sau khi burn subtitle.</p></div>
+        <div><label className="label">Tốc độ video</label><select className="select-ghost" value={renderOptions.video_speed} onChange={e => updateOptions({ video_speed: Number(e.target.value) })}><option value={1.0}>1.0x — Bình thường</option><option value={1.1}>1.1x — Hơi nhanh</option><option value={1.2}>1.2x — Nhanh hơn</option><option value={1.3}>1.3x — Nhanh</option><option value={1.5}>1.5x — Rất nhanh</option></select><p className="mt-1 text-xs text-slate-400">Tăng tốc video cuối, giữ nguyên cao độ giọng. Áp dụng sau khi gắn phụ đề.</p></div>
 
       </div>
 
@@ -1483,7 +1473,7 @@ function RenderPanel({ canRender, isRendering, steps, status, cookiesFile, subti
 
     {!canRender && <p className="mt-3 text-xs text-yellow-300">Cần JSON đã validate hợp lệ. Nếu dựng video, cần thêm YouTube URL hoặc JSON có sources[].</p>}
 
-    <button className="btn-primary mt-4 w-full" disabled={!canRender} onClick={onRender}>{isRendering ? <Loader2 className="animate-spin" size={18}/> : <Play size={18}/>} {subtitleMode === 'srt_only' ? 'Xuất SRT' : 'Render video'}</button>
+    <button className="btn-primary mt-4 w-full" disabled={!canRender} onClick={onRender}>{isRendering ? <Loader2 className="animate-spin" size={18}/> : <Play size={18}/>} {subtitleMode === 'srt_only' ? 'Xuất SRT' : 'Dựng video'}</button>
 
     {status?.status === 'waiting_blur' && <BlurReviewEntry status={status} onOpen={onOpenBlurReview} onSkip={onSkipBlurReview}/>} 
 
@@ -1497,7 +1487,7 @@ function RenderPanel({ canRender, isRendering, steps, status, cookiesFile, subti
 
 function TitleOverlayOptions({ renderOptions, jsonPayload, onChange, onOpenTitleTool }: { renderOptions: RenderOptions; jsonPayload: GeminiEdlPayload | null; onChange: (patch: Partial<RenderOptions>) => void; onOpenTitleTool: () => void }) {
 
-  const rawTitle = renderOptions.title_mode === 'custom' ? renderOptions.title_text : jsonPayload?.metadata.video_title || 'Title preview từ metadata.video_title';
+  const rawTitle = renderOptions.title_mode === 'custom' ? renderOptions.title_text : jsonPayload?.metadata.video_title || 'Xem trước tiêu đề từ dữ liệu video';
 
   const maxLines = Math.max(1, Math.min(3, Number(renderOptions.title_max_lines) || 2));
 
@@ -1505,25 +1495,31 @@ function TitleOverlayOptions({ renderOptions, jsonPayload, onChange, onOpenTitle
 
   const ratio = renderOptions.vertical_mode === 'none' ? '16:9' : '9:16';
 
+  const titleStyleLabels: Record<string, string> = { breaking_yellow: 'Tin nóng + vàng', yellow_highlight: 'Nền vàng nổi bật', dark_badge: 'Nền tối', clean_white: 'Chữ trắng đơn giản' };
+  const titleAlignLabels: Record<string, string> = { left: 'Trái', center: 'Giữa', right: 'Phải' };
+  const titleBadgeLabels: Record<string, string> = { none: 'Không dùng', auto: 'Tự động', custom: 'Tùy chỉnh' };
+  const titleFontLabels: Record<string, string> = { auto: 'Tự động', small: 'Nhỏ', medium: 'Vừa', large: 'Lớn' };
+  const titlePosLabels: Record<string, string> = { top: 'Trên', upper_third: '1/3 phía trên', center: 'Giữa', bottom: 'Dưới' };
+
   return <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4">
 
-    <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h4 className="font-bold">Auto Title Overlay</h4><Pill tone={renderOptions.title_mode === 'none' ? 'yellow' : 'green'}>{renderOptions.title_mode === 'none' ? 'Off' : `${ratio} workspace`}</Pill></div>
+    <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h4 className="font-bold">Tiêu đề tự động</h4><Pill tone={renderOptions.title_mode === 'none' ? 'yellow' : 'green'}>{renderOptions.title_mode === 'none' ? 'Tắt' : `${ratio}`}</Pill></div>
 
     <div className="grid gap-3">
 
-      <div><label className="label">Title overlay</label><select className="select-ghost" value={renderOptions.title_mode} onChange={e => onChange({ title_mode: e.target.value as RenderOptions['title_mode'] })}><option value="auto">Auto from JSON title</option><option value="custom">Custom title</option><option value="none">Off</option></select></div>
+      <div><label className="label">Tiêu đề</label><select className="select-ghost" value={renderOptions.title_mode} onChange={e => onChange({ title_mode: e.target.value as RenderOptions['title_mode'] })}><option value="auto">Tự động từ dữ liệu video</option><option value="custom">Tiêu đề tùy chỉnh</option><option value="none">Tắt</option></select></div>
 
       <div className="rounded-2xl border border-white/10 bg-slate-950/40 p-3 text-xs text-slate-400">
 
-        <p className="line-clamp-2 text-slate-300">{renderOptions.title_mode === 'none' ? 'Title overlay đang tắt.' : rawTitle}</p>
+        <p className="line-clamp-2 text-slate-300">{renderOptions.title_mode === 'none' ? 'Lớp phủ tiêu đề đang tắt.' : rawTitle}</p>
 
-        <p className="mt-2">Style: {renderOptions.title_style} · Align: {renderOptions.title_text_align} · Badge: {renderOptions.title_badge_mode} · {renderOptions.title_show_duration === 'full' ? 'Full video' : `${renderOptions.title_intro_seconds}s intro`}</p>
+        <p className="mt-2">Kiểu: {titleStyleLabels[renderOptions.title_style] ?? renderOptions.title_style} · Canh: {titleAlignLabels[renderOptions.title_text_align] ?? renderOptions.title_text_align} · Huy hiệu: {titleBadgeLabels[renderOptions.title_badge_mode] ?? renderOptions.title_badge_mode} · {renderOptions.title_show_duration === 'full' ? 'Toàn video' : `${renderOptions.title_intro_seconds}s đầu`}</p>
 
-        <p className="mt-1">Font: {renderOptions.title_font_size} · {maxLines} dòng · {charsPerLine} ký tự/dòng · Position: {renderOptions.title_position}</p>
+        <p className="mt-1">Cỡ chữ: {titleFontLabels[renderOptions.title_font_size] ?? renderOptions.title_font_size} · {maxLines} dòng · {charsPerLine} ký tự/dòng · Vị trí: {titlePosLabels[renderOptions.title_position] ?? renderOptions.title_position}</p>
 
       </div>
 
-      <button className="btn-secondary w-full" onClick={onOpenTitleTool}>Mở Title Tool để preview đúng tỉ lệ</button>
+      <button className="btn-secondary w-full" onClick={onOpenTitleTool}>Mở phần Tiêu đề để xem trước đúng tỉ lệ</button>
 
     </div>
 
@@ -1537,7 +1533,7 @@ function TitleOverlayOptions({ renderOptions, jsonPayload, onChange, onOpenTitle
 
 function BlurReviewEntry({ status, onOpen, onSkip }: { status: RenderJobStatus; onOpen: () => void; onSkip: (jobId: string) => void }) {
 
-  return <div className="mt-4 rounded-2xl border border-yellow-500/30 bg-yellow-500/10 p-4"><div className="flex items-start gap-3"><Bell size={20} className="mt-0.5 flex-shrink-0 text-yellow-400"/><div className="min-w-0 flex-1"><h3 className="font-bold text-yellow-100">Đang chờ Blur Review</h3><p className="mt-1 text-sm text-slate-300">Video trung gian đã được tạo đúng tỉ lệ output.</p><p className="mt-2 rounded-lg border border-yellow-500/20 bg-yellow-500/5 px-3 py-2 text-sm font-medium text-yellow-200"><Bell size={14} className="-mt-0.5 mr-1 inline"/>Mở workspace lớn để chọn vùng blur chính xác hơn, hoặc bỏ qua nếu không cần.</p><div className="mt-4 flex flex-wrap gap-2"><button className="btn-primary" onClick={onOpen}>Mở Blur Review Workspace</button><button className="btn-secondary" onClick={() => onSkip(status.job_id)}>Không blur, tiếp tục xuất final</button></div></div></div></div>;
+  return <div className="mt-4 rounded-2xl border border-yellow-500/30 bg-yellow-500/10 p-4"><div className="flex items-start gap-3"><Bell size={20} className="mt-0.5 flex-shrink-0 text-yellow-400"/><div className="min-w-0 flex-1"><h3 className="font-bold text-yellow-100">Đang chờ chọn vùng làm mờ</h3><p className="mt-1 text-sm text-slate-300">Video xem trước đã được tạo đúng tỉ lệ.</p><p className="mt-2 rounded-lg border border-yellow-500/20 bg-yellow-500/5 px-3 py-2 text-sm font-medium text-yellow-200"><Bell size={14} className="-mt-0.5 mr-1 inline"/>Mở trình chỉnh làm mờ để chọn vùng chính xác hơn, hoặc bỏ qua nếu không cần.</p><div className="mt-4 flex flex-wrap gap-2"><button className="btn-primary" onClick={onOpen}>Mở trình chỉnh làm mờ</button><button className="btn-secondary" onClick={() => onSkip(status.job_id)}>Không làm mờ, tiếp tục xuất video</button></div></div></div></div>;
 
 }
 
@@ -1619,7 +1615,7 @@ function BlurReviewPanel({ status }: { status: RenderJobStatus }) {
 
 
 
-  return <div className="mt-4 rounded-2xl border border-yellow-500/30 bg-yellow-500/10 p-4"><h3 className="mb-2 font-bold text-yellow-100">Blur Review</h3><p className="mb-4 text-sm text-slate-300">Video đã được cắt/ghép/chuyển tỉ lệ. Hãy chọn vùng cần làm mờ trước khi burn subtitle hoặc xuất final.</p>{previewPath && <div className="grid gap-4 lg:grid-cols-[1.2fr_.8fr]"><BlurRegionEditor videoUrl={blurPreviewUrl(previewPath)} regions={regions} selected={selected} locked={new Set()} onChange={setRegions} onSelect={(id) => setSelected(id !== null ? new Set([id]) : new Set())} onToggleLock={() => {}} onCurrentTimeChange={setCurrentTime}/><BlurRegionSidebar regions={regions} selected={selected} locked={new Set()} onChange={setRegions} onSelect={(id) => setSelected(id !== null ? new Set([id]) : new Set())} onToggleLock={() => {}} currentTime={currentTime}/></div>}<div className="mt-4 flex flex-wrap gap-2"><button className="btn-secondary" disabled={submitting} onClick={skip}>Không blur, tiếp tục xuất final</button><button className="btn-primary" disabled={submitting || !regions.length} onClick={apply}>Áp dụng blur và tiếp tục</button></div></div>;
+  return <div className="mt-4 rounded-2xl border border-yellow-500/30 bg-yellow-500/10 p-4"><h3 className="mb-2 font-bold text-yellow-100">Chọn vùng làm mờ</h3><p className="mb-4 text-sm text-slate-300">Video đã được cắt/ghép/chuyển tỉ lệ. Hãy chọn vùng cần làm mờ trước khi gắn phụ đề hoặc xuất video.</p>{previewPath && <div className="grid gap-4 lg:grid-cols-[1.2fr_.8fr]"><BlurRegionEditor videoUrl={blurPreviewUrl(previewPath)} regions={regions} selected={selected} locked={new Set()} onChange={setRegions} onSelect={(id) => setSelected(id !== null ? new Set([id]) : new Set())} onToggleLock={() => {}} onCurrentTimeChange={setCurrentTime}/><BlurRegionSidebar regions={regions} selected={selected} locked={new Set()} onChange={setRegions} onSelect={(id) => setSelected(id !== null ? new Set([id]) : new Set())} onToggleLock={() => {}} currentTime={currentTime}/></div>}<div className="mt-4 flex flex-wrap gap-2"><button className="btn-secondary" disabled={submitting} onClick={skip}>Không làm mờ, tiếp tục xuất video</button><button className="btn-primary" disabled={submitting || !regions.length} onClick={apply}>Áp dụng làm mờ và tiếp tục</button></div></div>;
 
 }
 
@@ -1742,9 +1738,9 @@ function MaintenancePanel({ stats, licenseStatus, initialUpdateData, onRefresh, 
 
     </div>
 
-    <div className="grid gap-3 md:grid-cols-4"><Stat label="Outputs" value={fmtBytes(stats?.outputs_size_bytes)}/><Stat label="Temp" value={fmtBytes(stats?.temp_size_bytes)}/><Stat label="Output items" value={`${stats?.outputs_count ?? 0}`}/><Stat label="Temp items" value={`${stats?.temp_count ?? 0}`}/></div>
+    <div className="grid gap-3 md:grid-cols-4"><Stat label="Video đầu ra" value={fmtBytes(stats?.outputs_size_bytes)}/><Stat label="Tạm thời" value={fmtBytes(stats?.temp_size_bytes)}/><Stat label="Số file đầu ra" value={`${stats?.outputs_count ?? 0}`}/><Stat label="Số file tạm" value={`${stats?.temp_count ?? 0}`}/></div>
 
-    <div className="mt-5"><button className="btn-primary w-full justify-center py-3 text-base" onClick={() => { if (confirm('Dọn dẹp tất cả dữ liệu tạm và output cũ? Video final sẽ được giữ nguyên.')) onCleanup(); }}><Trash2 size={18}/> Dọn dẹp</button></div>
+    <div className="mt-5"><button className="btn-primary w-full justify-center py-3 text-base" onClick={() => { if (confirm('Dọn dẹp tất cả dữ liệu tạm và video đầu ra cũ? Video cuối cùng sẽ được giữ nguyên.')) onCleanup(); }}><Trash2 size={18}/> Dọn dẹp</button></div>
 
   </Card>;
 
@@ -1775,7 +1771,7 @@ function LicenseGate({ licenseStatus, onActivate, onRefresh }: { licenseStatus: 
       <div className="mb-4 flex items-center gap-2 rounded-xl border border-white/10 bg-slate-950/40 p-3 text-sm">
         <span className="text-slate-400">Hardware ID:</span>
         <b className="flex-1 tracking-widest text-cyan-100">{licenseStatus.hardware_id}</b>
-        <button className="btn-mini" onClick={copyHardwareId}><Copy size={14}/>Copy</button>
+        <button className="btn-mini" onClick={copyHardwareId}><Copy size={14}/>Sao chép</button>
       </div>
       <div className="space-y-3">
         <label className="label">Nhập license key</label>

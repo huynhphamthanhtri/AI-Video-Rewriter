@@ -48,6 +48,13 @@ def create_app() -> FastAPI:
     )
     app.include_router(router, prefix="/api")
     _validate_routes()
+
+    async def _resume_persisted_batches() -> None:
+        from app.api.routes import batch_service
+
+        batch_service.resume_pending()
+
+    app.add_event_handler("startup", _resume_persisted_batches)
     try:
         from app.api.routes import start_cleanup_scheduler
         start_cleanup_scheduler()

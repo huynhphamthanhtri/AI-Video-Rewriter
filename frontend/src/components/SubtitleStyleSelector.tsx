@@ -8,20 +8,29 @@ type SubtitleStyleSelectorProps = {
 };
 
 const styleLabels: Record<string, string> = {
-  default: 'Default — Arial 48px, viền nhẹ, hộp nền',
+  default: 'Mặc định — Arial 48px, viền nhẹ, hộp nền',
   shorts_bold: 'Shorts Bold — Arial 52px, viền dày, nổi bật',
-  documentary: 'Documentary — Tahoma 42px, thanh lịch',
-  minimal: 'Minimal — Arial 36px, không viền, không hộp',
-  news: 'News — Tahoma 46px, sạch sẽ, giống phát thanh viên',
-  high_contrast: 'High Contrast — Arial 50px, viền dày, tương phản cao',
+  documentary: 'Phim tài liệu — Tahoma 42px, thanh lịch',
+  minimal: 'Tối giản — Arial 36px, không viền, không hộp',
+  news: 'Tin tức — Tahoma 46px, sạch sẽ, giống phát thanh viên',
+  high_contrast: 'Tương phản cao — Arial 50px, viền dày, tương phản cao',
+};
+
+const stylePillLabels: Record<string, string> = {
+  default: 'Mặc định',
+  shorts_bold: 'Shorts Bold',
+  documentary: 'Phim tài liệu',
+  minimal: 'Tối giản',
+  news: 'Tin tức',
+  high_contrast: 'Tương phản cao',
 };
 
 export function SubtitleStyleSelector({ renderOptions, onChange }: SubtitleStyleSelectorProps) {
   return (
     <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 p-4">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <h4 className="font-bold">Subtitle Style</h4>
-        <Pill tone="green">{renderOptions.subtitle_style}</Pill>
+        <h4 className="font-bold">Kiểu phụ đề</h4>
+        <Pill tone="green">{stylePillLabels[renderOptions.subtitle_style] ?? renderOptions.subtitle_style}</Pill>
       </div>
       <div className="grid gap-3">
         <div>
@@ -44,10 +53,10 @@ export function SubtitleStyleSelector({ renderOptions, onChange }: SubtitleStyle
               value={renderOptions.subtitle_font_size}
               onChange={e => onChange({ subtitle_font_size: e.target.value as RenderOptions['subtitle_font_size'] })}
             >
-              <option value="auto">Auto — theo style</option>
-              <option value="small">Small (36px)</option>
-              <option value="medium">Medium (48px)</option>
-              <option value="large">Large (56px)</option>
+              <option value="auto">Tự động — theo style</option>
+              <option value="small">Nhỏ (36px)</option>
+              <option value="medium">Vừa (48px)</option>
+              <option value="large">Lớn (56px)</option>
             </select>
           </div>
           <div>
@@ -94,7 +103,7 @@ export function SubtitleStyleSelector({ renderOptions, onChange }: SubtitleStyle
               checked={renderOptions.subtitle_outline}
               onChange={e => onChange({ subtitle_outline: e.target.checked })}
             />
-            Viền chữ (Outline)
+            Viền chữ
           </label>
           <label className="flex items-center gap-2 rounded-xl border border-white/10 bg-slate-950/40 p-3 text-sm">
             <input
@@ -102,7 +111,7 @@ export function SubtitleStyleSelector({ renderOptions, onChange }: SubtitleStyle
               checked={renderOptions.subtitle_shadow}
               onChange={e => onChange({ subtitle_shadow: e.target.checked })}
             />
-            Bóng đổ (Shadow)
+            Bóng đổ
           </label>
           <label className="flex items-center gap-2 rounded-xl border border-white/10 bg-slate-950/40 p-3 text-sm">
             <input
@@ -110,7 +119,7 @@ export function SubtitleStyleSelector({ renderOptions, onChange }: SubtitleStyle
               checked={renderOptions.subtitle_box}
               onChange={e => onChange({ subtitle_box: e.target.checked })}
             />
-            Hộp nền (Box)
+            Hộp nền
           </label>
         </div>
       </div>

@@ -1,6 +1,13 @@
 from app.services.gemini_automation import GeminiAutomationService
 
 
+def test_automation_pipeline_no_longer_accepts_analysis_mode():
+    import inspect
+
+    signature = inspect.signature(GeminiAutomationService._run_pipeline)
+    assert "analysis_mode" not in signature.parameters
+
+
 def make_valid_edl_dict(title="10 Phút Nấu Phở", script="Hôm nay chúng ta sẽ cùng học nấu phở.", srt_text="Hôm nay chúng ta sẽ cùng học nấu phở"):
     return {
         "metadata": {
@@ -40,7 +47,6 @@ def make_valid_edl_dict(title="10 Phút Nấu Phở", script="Hôm nay chúng ta
                 "subtitle_start": 1,
                 "subtitle_end": 1,
                 "scene_description": "Mở đầu",
-                "importance_score": 95,
             }
         ],
     }
@@ -85,7 +91,6 @@ def make_template_dict():
                 "subtitle_start": 1,
                 "subtitle_end": 1,
                 "scene_description": "Mô tả ngắn cảnh được chọn",
-                "importance_score": 95,
             }
         ],
     }
@@ -138,6 +143,16 @@ def test_looks_like_schema_template_false_positive_guard():
     assert not GeminiAutomationService._looks_like_schema_template(d)
 
 
+def test_automation_pipeline_uses_simple_editor_telemetry_name():
+    import inspect
+
+    source = inspect.getsource(GeminiAutomationService._run_pipeline)
+    assert "simple_editor_edl" in source
+    assert "analysis_mode" not in source
+    assert "deep_analysis" not in source
+    assert "lean_editor" not in source
+
+
 def test_extract_json_empty():
     assert service._extract_json("") == ""
     assert service._extract_json("abc") == ""
@@ -161,7 +176,7 @@ def test_extract_json_rejects_template_in_body_text():
         '"sources":[{"source_id":"source_1","youtube_url":"https://www.youtube.com/watch?v=dQw4w9WgXcQ","label":"Video nguồn chính"}],'
         '"rewrite_script":{"full_text":"string"},'
         '"srt":[{"index":1,"start":"00:00:00,000","end":"00:00:05,000","text":"Subtitle text"}],'
-        '"video_segments":[{"segment_id":1,"order":1,"source_id":"source_1","source_start":"00:00:12.000","source_end":"00:00:17.000","subtitle_start":1,"subtitle_end":1,"scene_description":"Mô tả ngắn cảnh được chọn","importance_score":95}]}'
+        '"video_segments":[{"segment_id":1,"order":1,"source_id":"source_1","source_start":"00:00:12.000","source_end":"00:00:17.000","subtitle_start":1,"subtitle_end":1,"scene_description":"Mô tả ngắn cảnh được chọn"}]}'
         "\n\nTrailing text..."
     )
     result = service._extract_json(text)
@@ -240,15 +255,15 @@ def test_extract_json_multiple_json_objects_reversed_order():
 
 
 def test_choose_final_response_text_prefers_clipboard_when_both_have_json():
-    dom = 'Some text with {"metadata":{"video_title":"DOM Title","rewrite_style":"D","target_audience":"D","tone":"D","target_duration":"D","hashtags":[]},"rewrite_script":{"full_text":"Dom text"},"srt":[{"index":1,"start":"00:00:00,000","end":"00:00:03,000","text":"Dom"}],"video_segments":[{"segment_id":1,"order":1,"source_start":"00:00:00.000","source_end":"00:00:03.000","subtitle_start":1,"subtitle_end":1,"scene_description":"D","importance_score":95}]}'
-    clip = 'Clipboard text with {"metadata":{"video_title":"Clip Title","rewrite_style":"C","target_audience":"C","tone":"C","target_duration":"C","hashtags":[]},"rewrite_script":{"full_text":"Clip text"},"srt":[{"index":1,"start":"00:00:00,000","end":"00:00:03,000","text":"Clip"}],"video_segments":[{"segment_id":1,"order":1,"source_start":"00:00:00.000","source_end":"00:00:03.000","subtitle_start":1,"subtitle_end":1,"scene_description":"C","importance_score":95}]}'
+    dom = 'Some text with {"metadata":{"video_title":"DOM Title","rewrite_style":"D","target_audience":"D","tone":"D","target_duration":"D","hashtags":[]},"rewrite_script":{"full_text":"Dom text"},"srt":[{"index":1,"start":"00:00:00,000","end":"00:00:03,000","text":"Dom"}],"video_segments":[{"segment_id":1,"order":1,"source_start":"00:00:00.000","source_end":"00:00:03.000","subtitle_start":1,"subtitle_end":1,"scene_description":"D"}]}'
+    clip = 'Clipboard text with {"metadata":{"video_title":"Clip Title","rewrite_style":"C","target_audience":"C","tone":"C","target_duration":"C","hashtags":[]},"rewrite_script":{"full_text":"Clip text"},"srt":[{"index":1,"start":"00:00:00,000","end":"00:00:03,000","text":"Clip"}],"video_segments":[{"segment_id":1,"order":1,"source_start":"00:00:00.000","source_end":"00:00:03.000","subtitle_start":1,"subtitle_end":1,"scene_description":"C"}]}'
     result = service._choose_final_response_text(dom, clip)
     # Both have JSON; longer one wins
     assert "Clipboard" in result or "DOM" in result
 
 
 def test_choose_final_response_text_clipboard_when_dom_no_json():
-    clip = '{"metadata":{"video_title":"Clip Title","rewrite_style":"C","target_audience":"C","tone":"C","target_duration":"C","hashtags":[]},"rewrite_script":{"full_text":"Clip text"},"srt":[{"index":1,"start":"00:00:00,000","end":"00:00:03,000","text":"Clip"}],"video_segments":[{"segment_id":1,"order":1,"source_start":"00:00:00.000","source_end":"00:00:03.000","subtitle_start":1,"subtitle_end":1,"scene_description":"C","importance_score":95}]}'
+    clip = '{"metadata":{"video_title":"Clip Title","rewrite_style":"C","target_audience":"C","tone":"C","target_duration":"C","hashtags":[]},"rewrite_script":{"full_text":"Clip text"},"srt":[{"index":1,"start":"00:00:00,000","end":"00:00:03,000","text":"Clip"}],"video_segments":[{"segment_id":1,"order":1,"source_start":"00:00:00.000","source_end":"00:00:03.000","subtitle_start":1,"subtitle_end":1,"scene_description":"C"}]}'
     dom = "Just some random text without JSON structure"
     result = service._choose_final_response_text(dom, clip)
     import json
@@ -257,7 +272,7 @@ def test_choose_final_response_text_clipboard_when_dom_no_json():
 
 
 def test_choose_final_response_text_dom_when_clipboard_no_json():
-    dom = '{"metadata":{"video_title":"DOM Title","rewrite_style":"D","target_audience":"D","tone":"D","target_duration":"D","hashtags":[]},"rewrite_script":{"full_text":"Dom text"},"srt":[{"index":1,"start":"00:00:00,000","end":"00:00:03,000","text":"Dom"}],"video_segments":[{"segment_id":1,"order":1,"source_start":"00:00:00.000","source_end":"00:00:03.000","subtitle_start":1,"subtitle_end":1,"scene_description":"D","importance_score":95}]}'
+    dom = '{"metadata":{"video_title":"DOM Title","rewrite_style":"D","target_audience":"D","tone":"D","target_duration":"D","hashtags":[]},"rewrite_script":{"full_text":"Dom text"},"srt":[{"index":1,"start":"00:00:00,000","end":"00:00:03,000","text":"Dom"}],"video_segments":[{"segment_id":1,"order":1,"source_start":"00:00:00.000","source_end":"00:00:03.000","subtitle_start":1,"subtitle_end":1,"scene_description":"D"}]}'
     clip = "Just some random clipboard without JSON"
     result = service._choose_final_response_text(dom, clip)
     import json
@@ -284,7 +299,6 @@ def make_edl_with_segments(count: int) -> str:
             "subtitle_start": 1,
             "subtitle_end": 1,
             "scene_description": f"Scene {i}",
-            "importance_score": 90,
             "freeze_frame_duration": None,
         }
         for i in range(1, count + 1)
@@ -341,21 +355,6 @@ def test_response_has_minimum_segments_empty_string():
     assert count == 0
 
 
-def test_extract_analysis_json_accepts_analysis_root():
-    import json
-
-    payload = {
-        "analysis_version": 1,
-        "sources": [{"source_id": "source_1", "youtube_url": "https://www.youtube.com/watch?v=test"}],
-        "overall_summary": "summary",
-        "story_arc": {"setup": "a", "progression": "b", "climax": "c", "ending": "d"},
-        "segments": [{"source_id": "source_1", "index": 1, "start": "00:00:00.000", "end": "00:00:10.000"}],
-    }
-    extracted = GeminiAutomationService()._extract_analysis_json(json.dumps(payload, ensure_ascii=False))
-    assert extracted
-    assert json.loads(extracted)["analysis_version"] == 1
-
-
 def test_extract_json_rejects_analysis_root():
     import json
 
@@ -366,29 +365,6 @@ def test_extract_json_rejects_analysis_root():
         "segments": [{"source_id": "source_1", "index": 1, "start": "00:00:00.000", "end": "00:00:10.000"}],
     }
     assert GeminiAutomationService()._extract_json(json.dumps(payload, ensure_ascii=False)) == ""
-
-
-def test_choose_response_text_accepts_analysis_json_from_clipboard():
-    import json
-
-    service = GeminiAutomationService()
-    analysis_payload = {
-        "analysis_version": 1,
-        "sources": [{"source_id": "source_1", "youtube_url": "https://www.youtube.com/watch?v=test"}],
-        "overall_summary": "summary",
-        "story_arc": {"setup": "a", "progression": "b", "climax": "c", "ending": "d"},
-        "segments": [{"source_id": "source_1", "index": 1, "start": "00:00:00.000", "end": "00:00:10.000"}],
-    }
-    dom_text = "Gemini page text without structured JSON" * 20
-    clipboard_text = json.dumps(analysis_payload, ensure_ascii=False)
-
-    chosen = service._choose_final_response_text(
-        dom_text,
-        clipboard_text,
-        extract_json_fn=service._extract_analysis_json,
-    )
-
-    assert chosen == clipboard_text
 
 
 def test_choose_response_text_does_not_treat_analysis_as_final_edl():
@@ -407,33 +383,3 @@ def test_choose_response_text_does_not_treat_analysis_as_final_edl():
     chosen = service._choose_final_response_text(dom_text, clipboard_text)
 
     assert chosen == dom_text
-
-
-def test_recover_analysis_from_partial_accepts_valid_analysis_json():
-    import asyncio
-    import json
-
-    from app.services.gemini_automation import GeminiAutomationTask
-
-    service = GeminiAutomationService()
-    payload = {
-        "analysis_version": 1,
-        "sources": [{"source_id": "source_1", "youtube_url": "https://www.youtube.com/watch?v=test"}],
-        "overall_summary": "summary",
-        "story_arc": {"setup": "a", "progression": "b", "climax": "c", "ending": "d"},
-        "segments": [
-            {"source_id": "source_1", "index": 1, "start": "00:00:00.000", "end": "00:00:20.000", "story_role": "setup"},
-            {"source_id": "source_1", "index": 2, "start": "00:00:20.000", "end": "00:00:40.000", "story_role": "progression"},
-            {"source_id": "source_1", "index": 3, "start": "00:00:40.000", "end": "00:01:00.000", "story_role": "progression"},
-            {"source_id": "source_1", "index": 4, "start": "00:01:00.000", "end": "00:01:20.000", "story_role": "climax"},
-            {"source_id": "source_1", "index": 5, "start": "00:01:20.000", "end": "00:01:30.000", "story_role": "progression"},
-            {"source_id": "source_1", "index": 6, "start": "00:01:30.000", "end": "00:01:45.000", "story_role": "ending"},
-        ],
-    }
-    text = "partial Gemini page before copy button\n" + json.dumps(payload, ensure_ascii=False)
-
-    recovered, errors = asyncio.run(service._recover_analysis_from_partial(GeminiAutomationTask("partial-analysis"), text))
-
-    assert errors == []
-    assert recovered is not None
-    assert recovered["analysis_version"] == 1

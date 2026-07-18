@@ -126,7 +126,6 @@ export type VideoSegment = {
   subtitle_start: number;
   subtitle_end: number;
   scene_description: string;
-  importance_score: number;
 };
 
 export type GeminiEdlPayload = {
@@ -404,7 +403,6 @@ export type GeminiSessionStatus = {
 };
 
 export type GeminiThinkingMode = 'standard' | 'extended';
-export type GeminiAnalysisMode = 'deep_analysis' | 'fast';
 
 export type GeminiOpenBrowserResponse = {
   browser_id: string;

@@ -7,11 +7,11 @@ import { Card, Pill, SectionTitle } from './common';
 
 const LOCALE_LABELS: Record<string, string> = {
   'vi-VN': 'Tiếng Việt',
-  'en-US': 'English US',
-  'de-DE': 'Deutsch',
-  'ja-JP': '日本語',
-  'es-MX': 'Español México',
-  'ko-KR': '한국어',
+  'en-US': 'Tiếng Anh (Mỹ)',
+  'de-DE': 'Tiếng Đức',
+  'ja-JP': 'Tiếng Nhật',
+  'es-MX': 'Tiếng Tây Ban Nha (Mexico)',
+  'ko-KR': 'Tiếng Hàn',
 };
 
 const LOCALE_ORDER = ['vi-VN', 'en-US', 'ko-KR', 'ja-JP', 'de-DE', 'es-MX'];
@@ -211,11 +211,11 @@ export function TtsStudioPanel() {
       <Card>
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div>
-            <SectionTitle icon={Volume2} title="Text to Speech" desc="Tạo file giọng đọc WAV/MP3 từ text bằng Edge TTS" />
+            <SectionTitle icon={Volume2} title="TTS Studio" desc="Tạo file giọng đọc WAV/MP3 từ nội dung bằng Edge TTS" />
           </div>
           {ttsStatus && (
             <Pill tone={ttsStatus.status === 'ready' ? 'green' : 'yellow'}>
-              {ttsStatus.status === 'ready' ? 'TTS ready' : 'TTS chưa cài'}
+              {ttsStatus.status === 'ready' ? 'Sẵn sàng' : 'TTS chưa cài'}
             </Pill>
           )}
         </div>

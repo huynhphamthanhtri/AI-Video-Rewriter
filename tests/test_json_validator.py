@@ -7,7 +7,7 @@ def valid_payload():
         "metadata": {"video_title": "A", "rewrite_style": "Viral", "target_audience": "Đại chúng", "tone": "Năng lượng cao", "target_duration": "1-3 phút"},
         "rewrite_script": {"full_text": "Xin chào"},
         "srt": [{"index": 1, "start": "00:00:00,000", "end": "00:00:03,000", "text": "Xin chào"}],
-        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu", "importance_score": 95}],
+        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu"}],
     }
 
 
@@ -42,7 +42,7 @@ def test_validate_json_duration_mismatch():
     payload["video_segments"][0]["source_end"] = "00:00:40.000"
     valid, errors, _ = JsonValidator().validate(payload)
     assert valid is False
-    assert "thời lượng 40.0 giây" in errors[0]
+    assert "lệch timing: video=40.0s" in errors[0]
 
 
 def test_alignment_warnings_for_long_dense_segment():
@@ -106,7 +106,7 @@ def test_validate_json_tts_hybrid_rejects_large_shortage():
     assert valid is False
     assert model is None
     assert fixed_payload is None
-    assert any("thời lượng 3.0 giây" in error for error in errors)
+    assert any("lệch timing: video=3.0s" in error for error in errors)
 
 
 def test_validate_json_tts_hybrid_repairs_mixed_duration_mismatch():
@@ -116,8 +116,8 @@ def test_validate_json_tts_hybrid_repairs_mixed_duration_mismatch():
         {"index": 2, "start": "00:00:15,000", "end": "00:00:30,000", "text": "Hai"},
     ]
     payload["video_segments"] = [
-        {"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:23.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Một", "importance_score": 95},
-        {"segment_id": 2, "order": 2, "source_start": "00:00:30.000", "source_end": "00:00:42.000", "subtitle_start": 2, "subtitle_end": 2, "scene_description": "Hai", "importance_score": 95},
+        {"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:23.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Một"},
+        {"segment_id": 2, "order": 2, "source_start": "00:00:30.000", "source_end": "00:00:42.000", "subtitle_start": 2, "subtitle_end": 2, "scene_description": "Hai"},
     ]
     options = RenderOptions(tts_mode="voiceover", tts_fit_policy="hybrid")
 
@@ -160,7 +160,7 @@ def test_validate_json_duplicate_srt_with_segment_ref_does_not_auto_fix():
         {"index": 1, "start": "00:00:04,000", "end": "00:00:06,000", "text": "Hai (trùng index)"},
     ]
     payload["video_segments"] = [
-        {"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:06.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Cảnh", "importance_score": 90},
+        {"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:06.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Cảnh"},
     ]
     valid, errors, model, fixed_payload = JsonValidator().validate_with_auto_fix(payload)
     assert valid is False, "auto-fix should not silently produce valid payload when duplicates exist"
@@ -170,7 +170,7 @@ def test_validate_json_duplicate_srt_with_segment_ref_does_not_auto_fix():
 def test_validate_json_duplicate_segment_order():
     payload = valid_payload()
     payload["srt"].append({"index": 2, "start": "00:00:03,000", "end": "00:00:06,000", "text": "Xin chào"})
-    payload["video_segments"].append({"segment_id": 2, "order": 1, "source_start": "00:00:03.000", "source_end": "00:00:06.000", "subtitle_start": 2, "subtitle_end": 2, "scene_description": "Mở đầu", "importance_score": 95})
+    payload["video_segments"].append({"segment_id": 2, "order": 1, "source_start": "00:00:03.000", "source_end": "00:00:06.000", "subtitle_start": 2, "subtitle_end": 2, "scene_description": "Mở đầu"})
     valid, errors, _ = JsonValidator().validate(payload)
     assert valid is False
     assert "video_segments có order bị trùng" in errors[0]
@@ -285,9 +285,9 @@ def test_validate_srt_overlap_fails():
         {"index": 3, "start": "00:00:12,000", "end": "00:00:19,000", "text": "Nằm trong khoảng cue 2"},
     ]
     payload["video_segments"] = [
-        {"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:06.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu", "importance_score": 90},
-        {"segment_id": 2, "order": 2, "source_start": "00:00:06.000", "source_end": "00:01:22.000", "subtitle_start": 2, "subtitle_end": 2, "scene_description": "Tiếp", "importance_score": 80},
-        {"segment_id": 3, "order": 3, "source_start": "00:00:12.000", "source_end": "00:00:19.000", "subtitle_start": 3, "subtitle_end": 3, "scene_description": "Xung đột", "importance_score": 85},
+        {"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:06.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu"},
+        {"segment_id": 2, "order": 2, "source_start": "00:00:06.000", "source_end": "00:01:22.000", "subtitle_start": 2, "subtitle_end": 2, "scene_description": "Tiếp"},
+        {"segment_id": 3, "order": 3, "source_start": "00:00:12.000", "source_end": "00:00:19.000", "subtitle_start": 3, "subtitle_end": 3, "scene_description": "Xung đột"},
     ]
     valid, errors, _ = JsonValidator().validate(payload)
     assert valid is False
@@ -304,7 +304,7 @@ def test_validate_srt_tiny_overlap_auto_fix():
         {"index": 2, "start": "00:00:06,000", "end": "00:00:10,000", "text": "OK"},
     ]
     payload["video_segments"] = [
-        {"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:10.000", "subtitle_start": 1, "subtitle_end": 2, "scene_description": "Cảnh", "importance_score": 90},
+        {"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:10.000", "subtitle_start": 1, "subtitle_end": 2, "scene_description": "Cảnh"},
     ]
     valid, errors, model, fixed_payload = JsonValidator().validate_with_auto_fix(payload)
     assert valid is True, f"Tiny overlap should be auto-fixed but got: {errors}"
@@ -321,9 +321,9 @@ def test_validate_srt_large_overlap_no_auto_fix():
         {"index": 3, "start": "00:00:12,000", "end": "00:00:19,000", "text": "Nằm trong cue 2"},
     ]
     payload["video_segments"] = [
-        {"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:06.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu", "importance_score": 90},
-        {"segment_id": 2, "order": 2, "source_start": "00:00:06.000", "source_end": "00:01:22.000", "subtitle_start": 2, "subtitle_end": 2, "scene_description": "Tiếp", "importance_score": 80},
-        {"segment_id": 3, "order": 3, "source_start": "00:00:12.000", "source_end": "00:00:19.000", "subtitle_start": 3, "subtitle_end": 3, "scene_description": "Xung đột", "importance_score": 85},
+        {"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:06.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Mở đầu"},
+        {"segment_id": 2, "order": 2, "source_start": "00:00:06.000", "source_end": "00:01:22.000", "subtitle_start": 2, "subtitle_end": 2, "scene_description": "Tiếp"},
+        {"segment_id": 3, "order": 3, "source_start": "00:00:12.000", "source_end": "00:00:19.000", "subtitle_start": 3, "subtitle_end": 3, "scene_description": "Xung đột"},
     ]
     valid, errors, model, fixed_payload = JsonValidator().validate_with_auto_fix(payload)
     assert valid is False, "Large overlap should not be auto-fixed"

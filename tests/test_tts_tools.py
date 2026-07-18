@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.schemas.render import GeminiPayloadSchema, RenderOptions
+from app.schemas.render import GeminiPayloadSchema, RenderOptions, srt_timestamp_to_seconds
 from app.services.tts_tools import (
     TTS_STUDIO_MAX_CHARS,
     TTS_MAX_PAIR_AUTO_SHIFT_SECONDS,
@@ -34,7 +34,7 @@ class TestEdgeVoiceResolution:
             "metadata": {"video_title": "Test", "rewrite_style": "Viral", "target_audience": "all", "tone": "neutral", "target_duration": "short", "target_language": language},
             "rewrite_script": {"full_text": "test"},
             "srt": [{"index": 1, "start": "00:00:00,000", "end": "00:00:01,000", "text": "test"}],
-            "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:01.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "test", "importance_score": 80}],
+            "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:01.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "test"}],
         })
 
     def test_japanese_auto_defaults_to_nanami(self):
@@ -194,7 +194,7 @@ class TestGenerateVoiceoverTiming:
                 {"index": 2, "start": "00:00:02,000", "end": "00:00:04,000", "text": "Two"},
             ],
             "video_segments": [
-                {"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:04.000", "subtitle_start": 1, "subtitle_end": 2, "scene_description": "s", "importance_score": 80},
+                {"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:04.000", "subtitle_start": 1, "subtitle_end": 2, "scene_description": "s"},
             ],
         })
         output_dir = tmp_path / "output"
@@ -238,7 +238,7 @@ class TestGenerateVoiceoverTiming:
                 {"index": 1, "start": "00:00:00,000", "end": "00:00:03,000", "text": "One"},
             ],
             "video_segments": [
-                {"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "s", "importance_score": 80},
+                {"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "s"},
             ],
         })
         orig_start = payload.srt[0].start
@@ -373,22 +373,19 @@ class TestReconcilePayloadTtsTimeline:
         ]
         report = TtsVoiceoverService.reconcile_payload_tts_timeline(payload, plans)
         assert report["applied"] is True
-        assert len(report["adjustments"]) == 2
-        adj_cue1 = report["adjustments"][0]
-        adj_cue2 = report["adjustments"][1]
-        assert adj_cue1["cue_index"] == 1
-        assert adj_cue1["shift_seconds"] == pytest.approx(0.05, abs=0.001)
+        assert len(report["adjustments"]) == 1
+        adj_cue2 = report["adjustments"][0]
         assert adj_cue2["cue_index"] == 2
         assert adj_cue2["shift_seconds"] == pytest.approx(1.346, abs=0.001)
 
     def test_fail_pair_cap_raises_and_writes_file(self, tmp_path):
-        """Shift > 2.0s raises and writes failure diagnostic."""
+        """Shift above the configured pair cap raises and writes diagnostics."""
         payload = self._make_payload([
             {"index": 1, "start": "00:00:00,000", "end": "00:00:02,000"},
             {"index": 2, "start": "00:00:02,000", "end": "00:00:04,000"},
         ])
         plans = [
-            TtsCuePlan(index=1, segment_id=1, text="C1", start_seconds=0.0, end_seconds=2.0, slot_duration=2.0, generated_duration=2.0, applied_speed=1.0, final_duration=5.0, status="ok"),
+            TtsCuePlan(index=1, segment_id=1, text="C1", start_seconds=0.0, end_seconds=2.0, slot_duration=2.0, generated_duration=2.0, applied_speed=1.0, final_duration=13.0, status="ok"),
             TtsCuePlan(index=2, segment_id=2, text="C2", start_seconds=2.0, end_seconds=4.0, slot_duration=2.0, generated_duration=2.0, applied_speed=1.0, final_duration=2.0, status="ok"),
         ]
         with pytest.raises(RuntimeError, match="TTS_TIMING_RECONCILE_FAILED"):
@@ -403,7 +400,7 @@ class TestReconcilePayloadTtsTimeline:
         assert data["required_shift_seconds"] > TTS_MAX_PAIR_AUTO_SHIFT_SECONDS
 
     def test_total_cap_raises_and_writes_file(self, tmp_path):
-        """Cumulative shift > 5.0s raises and writes diagnostic."""
+        """Cumulative shift above the configured total cap raises diagnostics."""
         payload = self._make_payload([
             {"index": i, "start": f"00:00:0{idx * 5 // 10},{idx * 5 % 10 * 100:03d}", "end": f"00:00:0{(idx + 1) * 5 // 10},{(idx + 1) * 5 % 10 * 100:03d}"}
             for idx, i in enumerate(range(1, 8))
@@ -416,10 +413,11 @@ class TestReconcilePayloadTtsTimeline:
             {"index": 5, "start": "00:00:02,000", "end": "00:00:02,500"},
             {"index": 6, "start": "00:00:02,500", "end": "00:00:03,000"},
             {"index": 7, "start": "00:00:03,000", "end": "00:00:03,500"},
+            {"index": 8, "start": "00:00:03,500", "end": "00:00:04,000"},
         ])
         plans = [
             TtsCuePlan(index=i, segment_id=i, text=f"C{i}", start_seconds=(i - 1) * 0.5, end_seconds=i * 0.5, slot_duration=0.5, generated_duration=0.5, applied_speed=1.0, final_duration=2.0, status="ok")
-            for i in range(1, 8)
+            for i in range(1, 9)
         ]
         with pytest.raises(RuntimeError, match="TTS_TIMING_RECONCILE_TOTAL_TOO_LARGE"):
             TtsVoiceoverService.reconcile_payload_tts_timeline(payload, plans, output_dir=tmp_path)
@@ -430,6 +428,87 @@ class TestReconcilePayloadTtsTimeline:
         assert data["failed"] is True
         assert data["failure_code"] == "TTS_TIMING_RECONCILE_TOTAL_TOO_LARGE"
         assert data["candidate_total_shift_seconds"] > TTS_MAX_TOTAL_AUTO_SHIFT_SECONDS
+
+    def test_long_timeline_allows_small_proportional_total_shift(self):
+        payload = self._make_payload([
+            {"index": 1, "start": "00:00:00,000", "end": "00:01:40,000"},
+            {"index": 2, "start": "00:01:40,000", "end": "00:03:20,000"},
+            {"index": 3, "start": "00:03:20,000", "end": "00:05:00,000"},
+            {"index": 4, "start": "00:05:00,000", "end": "00:06:40,000"},
+        ])
+        plans = [
+            TtsCuePlan(index=i, segment_id=i, text=f"C{i}", start_seconds=(i - 1) * 100.0, end_seconds=i * 100.0, slot_duration=100.0, generated_duration=100.0, applied_speed=1.0, final_duration=103.9, status="ok")
+            for i in range(1, 5)
+        ]
+        report = TtsVoiceoverService.reconcile_payload_tts_timeline(payload, plans)
+        assert report["total_shift_seconds"] > TTS_MAX_TOTAL_AUTO_SHIFT_SECONDS
+        assert report["total_shift_seconds"] < report["max_total_auto_shift_seconds"]
+        assert report["max_total_auto_shift_seconds"] == pytest.approx(20.8)
+
+    def test_long_timeline_allows_small_proportional_pair_shift(self):
+        payload = self._make_payload([
+            {"index": 1, "start": "00:00:00,000", "end": "00:06:40,000"},
+            {"index": 2, "start": "00:06:40,000", "end": "00:13:20,000"},
+        ])
+        plans = [
+            TtsCuePlan(index=1, segment_id=1, text="C1", start_seconds=0.0, end_seconds=400.0, slot_duration=400.0, generated_duration=400.0, applied_speed=1.0, final_duration=402.5, status="ok"),
+            TtsCuePlan(index=2, segment_id=2, text="C2", start_seconds=400.0, end_seconds=800.0, slot_duration=400.0, generated_duration=400.0, applied_speed=1.0, final_duration=400.0, status="ok"),
+        ]
+        report = TtsVoiceoverService.reconcile_payload_tts_timeline(payload, plans)
+        assert report["total_shift_seconds"] == pytest.approx(2.55, abs=0.001)
+        assert report["max_pair_auto_shift_seconds"] == pytest.approx(10.0)
+
+    def test_reconcile_does_not_insert_gap_for_abutting_cues(self):
+        """Cues abutting exactly: no overlap → no shift."""
+        payload = self._make_payload([
+            {"index": 1, "start": "00:00:00,000", "end": "00:00:02,000"},
+            {"index": 2, "start": "00:00:02,000", "end": "00:00:04,000"},
+        ])
+        plans = [
+            TtsCuePlan(index=1, segment_id=1, text="C1", start_seconds=0.0, end_seconds=2.0, slot_duration=2.0, generated_duration=2.0, applied_speed=1.0, final_duration=2.0, status="ok"),
+            TtsCuePlan(index=2, segment_id=2, text="C2", start_seconds=2.0, end_seconds=4.0, slot_duration=2.0, generated_duration=2.0, applied_speed=1.0, final_duration=2.0, status="ok"),
+        ]
+        report = TtsVoiceoverService.reconcile_payload_tts_timeline(payload, plans)
+        assert report["applied"] is False
+        assert report["adjustments"] == []
+        cue1_start = srt_timestamp_to_seconds(payload.srt[0].start)
+        cue2_start = srt_timestamp_to_seconds(payload.srt[1].start)
+        assert cue1_start == pytest.approx(0.0)
+        assert cue2_start == pytest.approx(2.0)
+
+    def test_reconcile_preserves_existing_small_natural_gap(self):
+        """Cues with a small natural gap (0.1s): no overlap → no shift."""
+        payload = self._make_payload([
+            {"index": 1, "start": "00:00:00,000", "end": "00:00:02,000"},
+            {"index": 2, "start": "00:00:02,100", "end": "00:00:04,000"},
+        ])
+        plans = [
+            TtsCuePlan(index=1, segment_id=1, text="C1", start_seconds=0.0, end_seconds=2.0, slot_duration=2.0, generated_duration=2.0, applied_speed=1.0, final_duration=2.0, status="ok"),
+            TtsCuePlan(index=2, segment_id=2, text="C2", start_seconds=2.1, end_seconds=4.0, slot_duration=1.9, generated_duration=1.9, applied_speed=1.0, final_duration=1.9, status="ok"),
+        ]
+        report = TtsVoiceoverService.reconcile_payload_tts_timeline(payload, plans)
+        assert report["applied"] is False
+        assert report["adjustments"] == []
+        cue2_start = srt_timestamp_to_seconds(payload.srt[1].start)
+        assert cue2_start == pytest.approx(2.1)
+
+    def test_reconcile_still_shifts_when_overlap_real(self):
+        """Real overlap (voice overflow) → 0.25s breathing room shift applied."""
+        payload = self._make_payload([
+            {"index": 1, "start": "00:00:00,000", "end": "00:00:02,000"},
+            {"index": 2, "start": "00:00:02,000", "end": "00:00:04,000"},
+        ])
+        plans = [
+            TtsCuePlan(index=1, segment_id=1, text="C1", start_seconds=0.0, end_seconds=2.0, slot_duration=2.0, generated_duration=2.0, applied_speed=1.0, final_duration=3.296, status="ok"),
+            TtsCuePlan(index=2, segment_id=2, text="C2", start_seconds=2.0, end_seconds=4.0, slot_duration=2.0, generated_duration=2.0, applied_speed=1.0, final_duration=2.0, status="ok"),
+        ]
+        report = TtsVoiceoverService.reconcile_payload_tts_timeline(payload, plans)
+        assert report["applied"] is True
+        assert len(report["adjustments"]) == 1
+        adj = report["adjustments"][0]
+        assert adj["cue_index"] == 2
+        # previous_end = max(2.0, 0+3.296) = 3.296; shift = 3.296 + 0.25 - 2.0 = 1.546
+        assert adj["shift_seconds"] == pytest.approx(1.346, abs=0.001)
 
 
 class TestMixVoiceoverDuration:

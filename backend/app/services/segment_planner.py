@@ -23,11 +23,20 @@ SAFE_VOICE_MAX_SOFT = 1.25
 SYNC_TOLERANCE_SECONDS = 0.25
 SYNC_TOLERANCE_RATIO = 0.05
 
-# Dead air hard trim: when residual even after capped speedup >= threshold,
-# force output duration to voice_duration + target_padding (server-side enforcement).
-# This bypasses Gemini non-compliance with scene length prompts.
-DEAD_AIR_HARD_TRIM_THRESHOLD = 1.5
-DEAD_AIR_TARGET_PADDING = 0.75
+# Hard trim guardrail: when residual even after capped speedup >= threshold,
+# force output duration to voice_duration + target_padding.
+# Only triggers when dead air is clearly excessive.
+DEAD_AIR_HARD_TRIM_THRESHOLD = 4.0
+DEAD_AIR_TARGET_PADDING = 0.25
+
+# Soft trim guardrail: when residual after capped speedup still exceeds
+# voice_duration + dynamic padding by a clear margin, apply soft normalization
+# instead of keeping excessive dead air.
+SOFT_DEAD_AIR_RATIO = 0.10
+SOFT_DEAD_AIR_MIN_PADDING = 0.50
+SOFT_DEAD_AIR_MAX_PADDING = 1.00
+SOFT_DEAD_AIR_TRIGGER_SECONDS = 0.0
+SOFT_DEAD_AIR_MIN_FINAL_SECONDS = 3.0
 
 
 class SegmentPlanner:
@@ -80,6 +89,13 @@ class SegmentPlanner:
             plans.append(plan)
 
         return plans
+
+    @staticmethod
+    def _soft_dead_air_padding(voice_duration: float) -> float:
+        return min(
+            SOFT_DEAD_AIR_MAX_PADDING,
+            max(SOFT_DEAD_AIR_MIN_PADDING, voice_duration * SOFT_DEAD_AIR_RATIO),
+        )
 
     def _decide(
         self,
@@ -157,7 +173,7 @@ class SegmentPlanner:
             self._attach_timing_warning(plan)
             return plan
 
-        # Underflow too large — apply capped speedup first, then hard trim if needed
+        # Underflow too large — apply capped speedup first, then soft or hard trim
         video_speed = SAFE_VIDEO_MAX_SOFT
         speedup_duration = scene_duration / video_speed
         residual = speedup_duration - total_natural
@@ -174,6 +190,27 @@ class SegmentPlanner:
                 f"Scene {segment_id}: hard trim to voice+{DEAD_AIR_TARGET_PADDING:.0f}s "
                 f"via video speed {video_speed:.2f}x. "
                 f"Scene {scene_duration:.1f}s vs voice {total_natural:.1f}s."
+            )
+            self._attach_timing_warning(plan)
+            return plan
+
+        # ── Soft trim: normalize residual when still excessive after capped speedup ──
+        padding = self._soft_dead_air_padding(total_natural)
+        target_duration = total_natural + padding
+        extra_after_target = speedup_duration - target_duration
+
+        if extra_after_target >= SOFT_DEAD_AIR_TRIGGER_SECONDS:
+            final_dur = max(target_duration, SOFT_DEAD_AIR_MIN_FINAL_SECONDS)
+            final_dur = min(final_dur, speedup_duration)
+            plan.video_speed_factor = video_speed
+            plan.speed_factor = 1.0
+            plan.decision = "sync_video_soft_trim"
+            plan.required_duration = final_dur
+            plan.duration_delta_seconds = final_dur - scene_duration
+            plan.warning = (
+                f"Scene {segment_id}: soft trim dead air via video speed {video_speed:.2f}x. "
+                f"Scene {scene_duration:.1f}s vs voice {total_natural:.1f}s, "
+                f"target {final_dur:.1f}s."
             )
             self._attach_timing_warning(plan)
             return plan
@@ -288,6 +325,9 @@ class SegmentPlanner:
             parts.append(f"CAP_REACHED_STILL_MISMATCH: capped at video_speed_max={SAFE_VIDEO_MAX_SOFT:.2f}x but residual={residual:.1f}s remains")
         if plan.decision == "sync_video_hard_trim":
             parts.append(f"HARD_TRIM_DEAD_AIR: trimmed output to voice+{DEAD_AIR_TARGET_PADDING:.0f}s after residual exceeded {DEAD_AIR_HARD_TRIM_THRESHOLD:.1f}s")
+        if plan.decision == "sync_video_soft_trim":
+            trim_padding = max(0.0, plan.required_duration - plan.natural_voice_duration)
+            parts.append(f"SOFT_TRIM_DEAD_AIR: trimmed to voice+{trim_padding:.1f}s padding")
         if parts:
             suffix = " | ".join(parts)
             plan.warning = (plan.warning + " | " + suffix) if plan.warning else suffix

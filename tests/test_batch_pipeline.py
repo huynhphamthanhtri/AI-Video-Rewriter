@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 from app.api import routes
 from app.schemas.prompt import GeminiAutoSubmitRequest
@@ -57,7 +58,7 @@ class FakeAutomationService:
 
     def start(self, task_id: str, prompt_text: str, render_payload: dict, user_data_dir: str | None = None,
               headless: bool | None = None, thinking_mode: str = "extended",
-              analysis_mode: str = "deep_analysis", form_data: dict | None = None):
+              form_data: dict | None = None):
         self.last_render_payload = render_payload
         url = render_payload["youtube_url"]
         self.started_urls.append(url)
@@ -140,6 +141,106 @@ def test_first_item_error_does_not_stop_second_item(monkeypatch):
     assert batch.status == "done"
 
 
+def test_completed_batch_persists_across_service_restart(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.batch_pipeline.PromptGenerator.generate", lambda self, data: "prompt")
+    storage = tmp_path / "batch_queue.json"
+    automation = FakeAutomationService()
+    service = BatchPipelineService(
+        automation,
+        lambda job_id: {"status": "done", "result": {"final_video_path": job_id}},
+        no_sleep,
+        storage_path=storage,
+    )
+
+    async def run():
+        batch = service.start(form_data=FORM_DATA, render_options={}, subtitle_mode="burn")
+        await service._tasks[batch.batch_id]
+        return batch.batch_id
+
+    batch_id = asyncio.run(run())
+    restored = BatchPipelineService(FakeAutomationService(), storage_path=storage)
+    batch = restored.get(batch_id)
+    assert batch is not None
+    assert batch.status == "done"
+    assert [item.status for item in batch.items] == ["done", "done"]
+
+
+def test_restart_marks_interrupted_item_failed_and_continues_next(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.services.batch_pipeline.PromptGenerator.generate", lambda self, data: "prompt")
+    storage = tmp_path / "batch_queue.json"
+    storage.write_text(json.dumps({
+        "version": 1,
+        "batches": [{
+            "progress": {
+                "batch_id": "persisted",
+                "status": "running",
+                "total_items": 2,
+                "current_index": 0,
+                "items": [
+                    {"index": 0, "source_url": FORM_DATA["youtube_urls"][0], "status": "running"},
+                    {"index": 1, "source_url": FORM_DATA["youtube_urls"][1], "status": "pending"},
+                ],
+            },
+            "config": {
+                "form_data": FORM_DATA,
+                "render_options": {},
+                "subtitle_mode": "burn",
+                "local_video_path": None,
+                "ytdlp_cookies_file": None,
+                "ytdlp_cookies_from_browser": None,
+                "user_data_dir": None,
+                "headless": True,
+                "gemini_thinking_mode": "standard",
+            },
+        }],
+    }), encoding="utf-8")
+    automation = FakeAutomationService()
+    service = BatchPipelineService(
+        automation,
+        lambda job_id: {"status": "done", "result": {"final_video_path": job_id}},
+        no_sleep,
+        storage_path=storage,
+    )
+    batch = service.get("persisted")
+    assert batch is not None
+    assert batch.status == "pending"
+    assert [item.status for item in batch.items] == ["error", "pending"]
+    assert "restarted" in (batch.items[0].error or "")
+
+    async def resume():
+        service.resume_pending()
+        await service._tasks["persisted"]
+
+    asyncio.run(resume())
+    assert automation.started_urls == [FORM_DATA["youtube_urls"][1]]
+    assert [item.status for item in batch.items] == ["error", "done"]
+    assert batch.status == "done"
+
+
+def test_queue_endurance_runs_twenty_items_sequentially_and_continues_failures(monkeypatch):
+    monkeypatch.setattr("app.services.batch_pipeline.PromptGenerator.generate", lambda self, data: "prompt")
+    urls = [f"https://www.youtube.com/watch?v=endurance{i:02d}" for i in range(20)]
+    fail_urls = set(urls[::5])
+    automation = FakeAutomationService(fail_urls=fail_urls)
+    service = BatchPipelineService(
+        automation,
+        lambda job_id: {"status": "done", "result": {"final_video_path": job_id}},
+        no_sleep,
+    )
+    form_data = {**FORM_DATA, "youtube_url": urls[0], "youtube_urls": urls}
+
+    async def run():
+        batch = service.start(form_data=form_data, render_options={}, subtitle_mode="srt")
+        await service._tasks[batch.batch_id]
+        return batch
+
+    batch = asyncio.run(run())
+    assert automation.started_urls == urls
+    assert sum(item.status == "error" for item in batch.items) == len(fail_urls)
+    assert sum(item.status == "done" for item in batch.items) == 20 - len(fail_urls)
+    assert batch.status == "done"
+
+
 def test_cancel_batch_marks_running_and_pending_items(monkeypatch):
     monkeypatch.setattr("app.services.batch_pipeline.PromptGenerator.generate", lambda self, data: "prompt")
     automation = FakeAutomationService()
@@ -172,6 +273,10 @@ def test_single_auto_submit_route_remains_registered():
     assert "/gemini/batch-auto-submit" in paths
 
 
+def test_auto_submit_defaults_to_video_without_burned_subtitles():
+    assert GeminiAutoSubmitRequest().subtitle_mode == "none"
+
+
 class FakeSession:
     class FakeDB:
         def close(self):
@@ -193,7 +298,7 @@ def test_single_auto_submit_function_uses_existing_service(monkeypatch):
 
     def fake_start(task_id: str, prompt_text: str, render_payload: dict, user_data_dir: str | None = None,
                     headless: bool | None = None, thinking_mode: str = "extended",
-                    analysis_mode: str = "deep_analysis", form_data: dict | None = None,
+                    form_data: dict | None = None,
                     dry_run: bool = False):
         calls.append({"single": {"task_id": task_id, "prompt_text": prompt_text, "render_payload": render_payload, "dry_run": dry_run}})
         return None
@@ -342,6 +447,27 @@ def test_parse_cookies_from_browser_helper():
     assert routes._parse_cookies_from_browser("  ") is None
     assert routes._parse_cookies_from_browser("edge:C:\\Edge\\Profile") == ("edge", "C:\\Edge\\Profile", None, None)
     assert routes._parse_cookies_from_browser("firefox:/home/user/firefox") == ("firefox", "/home/user/firefox", None, None)
+
+
+def test_ffprobe_direct_media_duration_supports_webm(monkeypatch):
+    monkeypatch.setattr(
+        routes.subprocess,
+        "run",
+        lambda *args, **kwargs: type("Result", (), {"returncode": 0, "stdout": "1680.4\n"})(),
+    )
+    assert routes._ffprobe_direct_media_duration("https://example.test/Apollo11.webm") == 1680
+
+
+def test_ffprobe_direct_media_duration_skips_web_pages(monkeypatch):
+    called = False
+
+    def fake_run(*args, **kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(routes.subprocess, "run", fake_run)
+    assert routes._ffprobe_direct_media_duration("https://www.youtube.com/watch?v=abc") is None
+    assert called is False
 
 
 def test_resolve_duration_auth_falls_back_to_repo_profile(monkeypatch, tmp_path):

@@ -773,7 +773,7 @@ def test_wait_for_response_returns_when_json_ready_and_stable(monkeypatch):
         "metadata": {"video_title": "Test", "rewrite_style": "Drama"},
         "rewrite_script": {"full_text": "Hello"},
         "srt": [{"index": 1, "start": "00:00:00,000", "end": "00:00:03,000", "text": "Hello"}],
-        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Test", "importance_score": 50}],
+        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Test"}],
     })
 
     monkeypatch.setattr(settings, "gemini_timeout_seconds", 60)

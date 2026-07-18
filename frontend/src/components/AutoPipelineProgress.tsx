@@ -34,8 +34,8 @@ const PASS2_STEPS = new Set([
 ]);
 
 const PHASES = [
-  { key: 'pass1' as const, label: 'Remake nội dung', sublabel: 'Pass 1' },
-  { key: 'pass2' as const, label: 'Xử lý nội dung', sublabel: 'Pass 2' },
+  { key: 'pass1' as const, label: 'Remake nội dung', sublabel: '' },
+  { key: 'pass2' as const, label: 'Xử lý nội dung', sublabel: '' },
   { key: 'done' as const, label: 'Xử lý xong', sublabel: '' },
 ];
 
@@ -55,7 +55,8 @@ function getCurrentPhaseKey(progress: AutoPipelineProgress): PhaseKey {
   const status = progress.status;
   if (status === 'done') return 'done';
 
-  const hasPass2Started = progress.states?.some(s => s.step === 'building_final_prompt');
+  const hasPass2Started = PASS2_STEPS.has(progress.step)
+    || progress.states?.some(s => PASS2_STEPS.has(s.step) && !PASS1_STEPS.has(s.step));
   if (hasPass2Started) return 'pass2';
 
   return 'pass1';
@@ -130,7 +131,7 @@ export function AutoPipelineProgress({
       <div className="mb-3 flex items-center justify-between">
         <h3 className="flex items-center gap-2 font-bold text-violet-200">
           <ExternalLink size={18} />
-          Auto Pipeline
+          Xử lý tự động
         </h3>
         <div className="flex items-center gap-2">
           {status === 'running' && (

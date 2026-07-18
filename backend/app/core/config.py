@@ -99,8 +99,6 @@ def _default_ytdlp_binary() -> str:
 
 class Settings(BaseSettings):
     app_name: str = APP_BRAND
-    api_prefix: str = "/api"
-    debug: bool = False
     sqlite_url: str = Field(default_factory=_default_sqlite_url)
     outputs_dir: Path = Field(default_factory=_default_outputs_dir)
     temp_dir: Path = Field(default_factory=_default_temp_dir)

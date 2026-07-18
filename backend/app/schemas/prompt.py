@@ -151,7 +151,7 @@ class PresetRecommendResponse(BaseModel):
 class GeminiAutoSubmitRequest(BaseModel):
     form_data: dict = {}
     render_options: dict = {}
-    subtitle_mode: str = "burn"
+    subtitle_mode: str = "none"
     ytdlp_cookies_file: str | None = None
     ytdlp_cookies_from_browser: str | None = None
     local_video_path: str | None = None
@@ -160,7 +160,6 @@ class GeminiAutoSubmitRequest(BaseModel):
     output_dir_path: str | None = None
     headless: bool = True
     gemini_thinking_mode: Literal["standard", "extended"] = "extended"
-    gemini_analysis_mode: Literal["deep_analysis", "fast"] = "deep_analysis"
     gemini_dry_run: bool = False
 
 
