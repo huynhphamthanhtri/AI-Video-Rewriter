@@ -29,6 +29,7 @@ const PASS2_STEPS = new Set([
   'extracting_json',
   'validating',
   'auto_retry',
+  'cleanup_gemini',
   'submitting_prompt',
   'waiting_response',
 ]);

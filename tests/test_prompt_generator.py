@@ -141,6 +141,43 @@ def test_generate_prompt_has_timing_and_voiceover_rules():
     assert "source_start phải nhỏ hơn source_end" in prompt
 
 
+def test_generate_prompt_has_dynamic_pacing_and_target_duration():
+    prompt = PromptGenerator().generate(_req(target_duration="10-20 phút"))
+    assert "Thời lượng remake mục tiêu: 10-20 phút" in prompt
+    assert "DYNAMIC PACING VÀ LONG-HORIZON PLANNING" in prompt
+    assert "FAST" in prompt and "3-5 giây/SRT" in prompt
+    assert "MEDIUM" in prompt and "6-10 giây/SRT" in prompt
+    assert "COMPACT" in prompt and "10-15 giây/SRT" in prompt
+    assert "25%, 50%, 75% và 100%" in prompt
+    assert "+/-15 percentage points" in prompt
+    assert "T_target_seconds" in prompt
+    assert "N_min = ceil" in prompt
+    assert "average_profile_duration_seconds" in prompt
+    assert "255" in prompt and "32 SRT" in prompt
+    assert "NARRATIVE EXPANSION STRATEGY" in prompt
+    assert "FINAL ARITHMETIC GATE" in prompt
+    assert "FINAL TEXT GATE" in prompt
+
+
+def test_generate_prompt_has_long_form_safety_and_terminal_sync_rules():
+    prompt = PromptGenerator().generate(_req(target_duration="5-10 phút"))
+    assert "Không áp bất kỳ giới hạn phần tử" in prompt
+    assert "không được vượt quá 3 dòng" in prompt
+    assert "boundary 80 ký tự" in prompt
+    assert "Wide-range mapping" in prompt
+    assert "Video segment cuối theo order" in prompt
+    assert "Mọi SRT index phải được ít nhất một video segment" in prompt
+    assert "Không đóng JSON sớm" in prompt or "đóng JSON sớm" in prompt
+
+
+def test_generate_prompt_removes_legacy_array_limit_and_clip_preservation_rule():
+    prompt = PromptGenerator().generate(_req())
+    assert "không được vượt quá 90 phần tử" not in prompt
+    assert "max 90" not in prompt.lower()
+    assert "Giữ lại từ 100% các cảnh" not in prompt
+    assert "Giữ 100% mạch truyện cốt lõi" in prompt
+
+
 def test_generate_prompt_has_consistency_rules():
     prompt = PromptGenerator().generate(_req())
     assert "full_text phải bằng nội dung" in prompt

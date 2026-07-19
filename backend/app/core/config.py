@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -78,6 +78,13 @@ def _default_gemini_profile_path() -> Path:
     return ROOT_DIR / "data" / "gemini_profile"
 
 
+def _default_gemini_audit_dir() -> Path:
+    value = os.environ.get("MRTRIS_AUTO_GEMINI_AUDIT_DIR")
+    if value:
+        return Path(value)
+    return _default_temp_dir() / "gemini_audit_runs"
+
+
 def _packaged_binary(relative_path: str) -> str | None:
     if os.environ.get("MRTRIS_AUTO_PACKAGED") != "1":
         return None
@@ -126,11 +133,25 @@ class Settings(BaseSettings):
     gemini_user_data_dir: str | None = None
     playwright_browsers_path: str | None = None
     playwright_headless: bool = True
-    gemini_timeout_seconds: int = 900
+    gemini_timeout_seconds: int = 180
     gemini_max_video_duration_seconds: int = 2700
     gemini_retry_count: int = 3
+    gemini_audit_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("GEMINI_AUDIT_ENABLED", "MRTRIS_AUTO_GEMINI_AUDIT"),
+    )
+    gemini_audit_dir: Path = Field(
+        default_factory=_default_gemini_audit_dir,
+        validation_alias=AliasChoices("GEMINI_AUDIT_DIR", "MRTRIS_AUTO_GEMINI_AUDIT_DIR"),
+    )
 
     model_config = SettingsConfigDict(env_file=str(ROOT_DIR / ".env"), env_file_encoding="utf-8", extra="ignore")
+
+    @model_validator(mode="after")
+    def disable_audit_for_packaged_app(self) -> "Settings":
+        if os.environ.get("MRTRIS_AUTO_PACKAGED") == "1":
+            self.gemini_audit_enabled = False
+        return self
 
 
 settings = Settings()

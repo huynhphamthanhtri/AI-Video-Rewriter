@@ -140,9 +140,11 @@ class JsonValidator:
         try:
             normalized_payload = self.normalize_payload(payload)
             model = GeminiPayloadSchema.model_validate(normalized_payload)
+            semantic_errors = self._validate_timeline_semantics(model)
             timeline_errors = self._validate_srt_timeline(model)
-            if timeline_errors:
-                return False, timeline_errors, None
+            errors = semantic_errors + timeline_errors
+            if errors:
+                return False, errors, None
             return True, [], model
         except ValidationError as exc:
             return False, [self._translate_error(error) for error in exc.errors()], None
@@ -163,7 +165,7 @@ class JsonValidator:
         fixed_valid, fixed_errors, fixed_model = self.validate(fixed_payload)
         if fixed_valid:
             return True, ["AUTO FIX: Đã chuẩn hóa timeline/source duration trong payload."], fixed_model, fixed_payload
-        return False, errors + fixed_errors, None, None
+        return False, fixed_errors, None, None
 
     def alignment_warnings(self, payload: object) -> list[str]:
         valid, _, model = self.validate(payload)
@@ -281,6 +283,73 @@ class JsonValidator:
             f"({o['overlap_seconds']:.2f}s overlap)."
             for o in overlaps
         ]
+
+    @staticmethod
+    def _normalize_text_whitespace(value: str) -> str:
+        return re.sub(r"\s+", " ", value or "").strip()
+
+    @staticmethod
+    def _parse_exact_duration_seconds(value: str) -> float | None:
+        text = str(value or "").strip().lower()
+        if not text or re.search(r"\d\s*[-–]\s*\d", text):
+            return None
+        timecode = re.fullmatch(r"(\d+):(\d{2}):(\d{2})(?:[,.](\d{1,3}))?", text)
+        if timecode:
+            fraction = (timecode.group(4) or "0").ljust(3, "0")
+            return int(timecode.group(1)) * 3600 + int(timecode.group(2)) * 60 + int(timecode.group(3)) + int(fraction) / 1000
+        match = re.fullmatch(r"(\d+(?:[.,]\d+)?)\s*(?:phút|minutes?|mins?)", text)
+        if match:
+            return float(match.group(1).replace(",", ".")) * 60
+        match = re.fullmatch(r"(\d+(?:[.,]\d+)?)\s*(?:giây|seconds?|secs?)", text)
+        if match:
+            return float(match.group(1).replace(",", "."))
+        if re.fullmatch(r"\d+(?:[.,]\d+)?", text):
+            return float(text.replace(",", "."))
+        return None
+
+    def _validate_timeline_semantics(self, model: GeminiPayloadSchema) -> list[str]:
+        """Validate semantic closure after structural schema validation."""
+        errors: list[str] = []
+        sorted_srt = sorted(model.srt, key=lambda item: item.index)
+        sorted_segments = sorted(model.video_segments, key=lambda item: item.order)
+
+        joined_srt_text = " ".join(item.text for item in sorted_srt)
+        full_text = model.rewrite_script.full_text
+        if self._normalize_text_whitespace(full_text) != self._normalize_text_whitespace(joined_srt_text):
+            errors.append("TIMELINE_FULL_TEXT_MISMATCH: rewrite_script.full_text không khớp nội dung srt[].text.")
+
+        target_seconds = self._parse_exact_duration_seconds(model.metadata.target_duration)
+        if target_seconds is not None and sorted_srt:
+            actual_end_seconds = max(srt_timestamp_to_seconds(item.end) for item in sorted_srt)
+            delta = abs(actual_end_seconds - target_seconds)
+            tolerance = min(target_seconds * 0.05, 2.0)
+            if delta > tolerance:
+                errors.append(
+                    "TIMELINE_DURATION_INCOMPLETE: timeline kết thúc tại "
+                    f"{actual_end_seconds:.3f}s, target là {target_seconds:.3f}s, "
+                    f"lệch {delta:.3f}s (dung sai {tolerance:.3f}s)."
+                )
+
+        if sorted_srt and sorted_segments:
+            terminal_srt_index = sorted_srt[-1].index
+            terminal_segment = sorted_segments[-1]
+            if terminal_segment.subtitle_end != terminal_srt_index:
+                errors.append(
+                    "TIMELINE_TERMINAL_SYNC_MISMATCH: video segment cuối phải có "
+                    f"subtitle_end={terminal_srt_index}, nhận {terminal_segment.subtitle_end}."
+                )
+
+        if sorted_srt:
+            for item in sorted_srt:
+                if not any(
+                    segment.subtitle_start <= item.index <= segment.subtitle_end
+                    for segment in sorted_segments
+                ):
+                    errors.append(
+                        f"TIMELINE_UNMAPPED_SRT: srt index {item.index} không được video segment nào bao phủ."
+                    )
+
+        return errors
 
     def strip_markdown_code_fence(self, value: str) -> str:
         cleaned = value.strip()

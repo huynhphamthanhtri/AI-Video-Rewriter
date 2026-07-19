@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from app.schemas.prompt import PromptGenerateRequest
+from app.services.prompt_blocks.dynamic_pacing_block import DynamicPacingBlock
 from app.services.prompt_blocks.output_schema_block import OutputSchemaBlock
 from app.services.prompt_blocks.validation_block import ValidationBlock
 
@@ -54,7 +55,8 @@ class PromptComposer:
             "II. MỤC TIÊU SÁNG TẠO",
             "═══════════════════════════════════════════════════════════════",
             "Video remake phải có một câu chuyện hoàn chỉnh. Bám sát nội dung video gốc.",
-            "Không cắt bớt quá nhiều cảnh. Nội dung cần chất lượng, đầy đủ, thể hiện được câu chuyện. Giữ lại từ 100% các cảnh để đảm bảo chất lượng nội dung.",
+            "Giữ 100% mạch truyện cốt lõi, thematic beats và storytelling framework để câu chuyện hoàn chỉnh. "
+            "Cho phép compact montage, flashback và archival clips thành các visual block hợp nhất.",
         ]
 
         if data.user_instruction:
@@ -65,7 +67,11 @@ class PromptComposer:
         lines.extend([
             "",
             "═══════════════════════════════════════════════════════════════",
-            "III. QUY TẮC TIMING VÀ VOICEOVER",
+            DynamicPacingBlock().render(data),
+            "═══════════════════════════════════════════════════════════════",
+            "",
+            "═══════════════════════════════════════════════════════════════",
+            "IV. QUY TẮC TIMING VÀ VOICEOVER",
             "═══════════════════════════════════════════════════════════════",
             "Tốc độ đọc mục tiêu:",
             "- Trung bình: 2.5–3 từ Tiếng Việt mỗi giây.",
@@ -78,6 +84,9 @@ class PromptComposer:
             "- Không chia subtitle ở vị trí làm gãy nghĩa câu.",
             "- Ưu tiên mỗi subtitle chứa một ý hoàn chỉnh.",
             "- Subtitle phải dễ đọc và phù hợp để tạo voiceover.",
+            "- Subtitle MEDIUM/COMPACT sau khi wrap ở boundary 80 ký tự không được vượt quá 3 dòng.",
+            "- Nếu text clustered vượt giới hạn 3 dòng, phải chia sạch thành 2 SRT liên tiếp thay vì nhồi chữ.",
+            "- Clustering phải giữ tốc độ đọc tự nhiên 2.5-3 từ mỗi giây và không làm gãy ngữ nghĩa.",
             "",
             "Với mỗi video segment:",
             "- Hình ảnh phải trực tiếp hỗ trợ subtitle được tham chiếu.",
@@ -92,9 +101,12 @@ class PromptComposer:
             "- Cần tạo payoff bằng hình ảnh.",
             "- Cần dành thời gian cho text overlay.",
             "Khoảng lặng có chủ ý phải được mô tả rõ trong scene_description.",
+            "Profile COMPACT 10-15 giây phục vụ visual continuity và montage; không bắt buộc text phải dài tương ứng.",
             "",
             "Cho phép nhiều video segment cùng tham chiếu một subtitle khi dựng montage.",
             "Cho phép một video segment tham chiếu nhiều subtitle liên tiếp khi cảnh đủ dài và vẫn phù hợp với toàn bộ nội dung lời dẫn.",
+            "Wide-range mapping (subtitle_start < subtitle_end) chỉ hợp lệ khi một visual block liên tục hỗ trợ toàn bộ dải subtitle.",
+            "Không mass-wrap các subtitle rời rạc hoặc không liên quan để chữa cháy khoảng trống timeline.",
             "Không để hai subtitle chồng thời gian lên nhau.",
             "Subtitle đầu tiên phải bắt đầu tại \"00:00:00,000\".",
             "source_start phải nhỏ hơn source_end.",
@@ -119,6 +131,9 @@ class PromptComposer:
             "video_segments[].segment_id phải là số nguyên dương, không trùng nhau.",
             "srt[].index phải tăng liên tục từ 1 và không trùng nhau.",
             "video_segments[].source_id phải tồn tại trong sources[].",
+            "SRT cuối cùng phải chứa phần kết luận thực sự của rewrite_script.full_text.",
+            "Video segment cuối theo order phải có subtitle_end bằng index cuối cùng của srt[].",
+            "Mọi SRT index phải được ít nhất một video segment bao phủ trong khoảng subtitle_start đến subtitle_end.",
             "",
             "═══════════════════════════════════════════════════════════════",
             "VI. ĐỊNH DẠNG TIMESTAMP",
@@ -153,6 +168,8 @@ class PromptComposer:
             "- Không có trailing comma.",
             "- Không có timestamp sai định dạng.",
             "- Không có dấu nháy kép chưa escape.",
+            "- normalize_whitespace(rewrite_script.full_text) bằng normalize_whitespace(srt[].text ghép theo index).",
+            "- Segment cuối trỏ đúng SRT cuối và không có SRT index chưa được cover.",
             "- Không có markdown hoặc văn bản ngoài JSON.",
             "- Nếu bất kỳ điều kiện nào chưa đạt, phải sửa trước khi trả kết quả.",
         ])

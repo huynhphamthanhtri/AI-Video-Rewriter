@@ -1,5 +1,3 @@
-import math
-
 import pytest
 
 from app.schemas.render import GeminiPayloadSchema, RenderOptions, clip_timestamp_to_seconds, srt_timestamp_to_seconds
@@ -50,13 +48,13 @@ def _plan_and_apply(payload: GeminiPayloadSchema, natural_durations: dict[int, f
     return plans
 
 
-def test_hybrid_small_overflow_now_uses_sync_speed_balance():
-    """Previously footage_extend for voice 4.3/scene 4. Now handled by sync_speed_balance."""
+def test_hybrid_small_overflow_now_uses_sync_duration_balance():
+    """Previously footage_extend for voice 4.3/scene 4. Now handled by duration balance."""
     payload = _payload_two_segments()
     plans = _plan_and_apply(payload, {1: 4.3, 2: 4.0}, source_duration=20.0)
 
     plan = plans[0]
-    assert plan.decision == "sync_speed_balance"
+    assert plan.decision == "sync_duration_balance"
     assert plan.video_speed_factor < 1.0  # slowdown
     assert plan.speed_factor > 1.0  # voice speedup
     assert plan.extend_seconds == 0.0
@@ -68,37 +66,35 @@ def test_hybrid_small_overflow_now_uses_sync_speed_balance():
     assert expected_cue2_start == pytest.approx(4.0 * internal_scale, rel=1e-3)
 
 
-def test_hybrid_large_overflow_now_uses_sync_speed_balance():
-    """Previously footage_extend for voice 5.0/scene 4. Now sync_speed_balance (video cap)."""
+def test_hybrid_large_overflow_now_uses_sync_duration_balance():
+    """Previously footage_extend for voice 5.0/scene 4. Now duration balance."""
     payload = _payload_two_segments()
     plans = _plan_and_apply(payload, {1: 5.0, 2: 4.0}, source_duration=20.0)
 
     plan = plans[0]
-    assert plan.decision == "sync_speed_balance"
-    assert plan.video_speed_factor == SAFE_VIDEO_MIN_SOFT  # capped
+    assert plan.decision == "sync_duration_balance"
+    assert plan.required_duration == pytest.approx(4.5, rel=1e-3)
     assert plan.extend_seconds == 0.0
-    # Eff scene = 4 / 0.92 = 4.348
-    internal_scale = 1.0 / SAFE_VIDEO_MIN_SOFT
+    internal_scale = 4.5 / 4.0
     expected_cue1_end = srt_timestamp_to_seconds(payload.srt[0].end)
     assert expected_cue1_end == pytest.approx(4.0 * internal_scale, rel=1e-3)
     expected_cue2_start = srt_timestamp_to_seconds(payload.srt[1].start)
     assert expected_cue2_start == pytest.approx(4.0 * internal_scale, rel=1e-3)
 
 
-def test_hybrid_large_overflow_with_exhausted_source_now_uses_sync_speed_balance():
+def test_hybrid_large_overflow_with_exhausted_source_now_uses_sync_duration_balance():
     """Previously freeze_frame for voice 6.0/scene 4. Now fits within 1.5 max speed."""
     payload = _payload_two_segments()
     plans = _plan_and_apply(payload, {1: 6.0, 2: 4.0}, source_duration=4.0)
 
     plan = plans[0]
-    assert plan.decision == "sync_speed_balance"
-    assert plan.video_speed_factor == SAFE_VIDEO_MIN_SOFT
-    expected_voice = (6.0 / 4.0) * SAFE_VIDEO_MIN_SOFT  # 1.38
-    assert plan.speed_factor == pytest.approx(expected_voice, rel=1e-3)
+    assert plan.decision == "sync_duration_balance"
+    target = 4.0 / SAFE_VIDEO_MIN_SOFT
+    assert plan.required_duration == pytest.approx(target, rel=1e-3)
+    assert plan.speed_factor == pytest.approx(6.0 / target, rel=1e-3)
     assert plan.extend_seconds == 0.0
     assert payload.video_segments[0].freeze_frame_duration is None
-    # Eff scene = 4 / 0.92 = 4.348
-    internal_scale = 1.0 / SAFE_VIDEO_MIN_SOFT
+    internal_scale = target / 4.0
     expected_cue1_end = srt_timestamp_to_seconds(payload.srt[0].end)
     assert expected_cue1_end == pytest.approx(4.0 * internal_scale, rel=1e-3)
 
@@ -109,22 +105,22 @@ def test_segment_plan_serialization_has_explicit_duration_fields():
 
     data = _segment_plan_to_dict(plans[0])
 
-    # Now uses sync_speed_balance: video_speed=0.92, eff_scene=4/0.92=4.348
+    # Now uses duration balance: target=(scene+voice)/2 = 4.5s
     assert data["original_scene_duration"] == pytest.approx(4.0)
-    assert data["final_scene_duration"] == pytest.approx(4.0 / SAFE_VIDEO_MIN_SOFT, rel=1e-3)
+    assert data["final_scene_duration"] == pytest.approx(4.5, rel=1e-3)
     assert data["natural_voice_duration"] == pytest.approx(5.0)
     assert data["extend_seconds"] == 0.0
-    assert data["decision"] == "sync_speed_balance"
-    assert data["speed_factor"] == pytest.approx(1.25 * SAFE_VIDEO_MIN_SOFT, rel=1e-3)
-    assert data["video_speed_factor"] == SAFE_VIDEO_MIN_SOFT
+    assert data["decision"] == "sync_duration_balance"
+    assert data["speed_factor"] == pytest.approx(5.0 / 4.5, rel=1e-3)
+    assert data["video_speed_factor"] == pytest.approx(4.0 / 4.5, rel=1e-3)
     assert data["freeze_duration"] is None
-    assert "VOICE_SPEED_LIMIT" in data["warning"]
+    assert data["balance_ratio"] == pytest.approx(0.5)
     assert data["warning"] != ""
     assert "scene_duration" not in data
     assert "required_duration" not in data
 
 
-def test_sync_speed_balance_small_overflow():
+def test_sync_duration_balance_small_overflow():
     """Voice slightly longer than scene → balanced video slowdown + voice speedup."""
     payload = _payload_two_segments()
     # Voice 4.3s in 4s scene: diff=0.3 > tolerance=0.25 → proceed
@@ -133,17 +129,16 @@ def test_sync_speed_balance_small_overflow():
     plans = _plan_and_apply(payload, {1: 4.3, 2: 4.0}, source_duration=20.0)
 
     plan = plans[0]
-    ratio = 4.3 / 4.0  # 1.075
-    ideal_video = 1.0 / math.sqrt(ratio)  # ~0.965
-    ideal_voice = math.sqrt(ratio)  # ~1.037
-    assert plan.decision == "sync_speed_balance"
-    assert plan.video_speed_factor == pytest.approx(ideal_video, rel=1e-3)
-    assert plan.speed_factor == pytest.approx(ideal_voice, rel=1e-3)
+    target = 4.0 + (4.3 - 4.0) * 0.5
+    assert plan.decision == "sync_duration_balance"
+    assert plan.required_duration == pytest.approx(target, rel=1e-3)
+    assert plan.video_speed_factor == pytest.approx(4.0 / target, rel=1e-3)
+    assert plan.speed_factor == pytest.approx(4.3 / target, rel=1e-3)
     assert plan.extend_seconds == 0.0
-    assert plan.duration_delta_seconds == pytest.approx(4 / ideal_video - 4, rel=1e-3)
+    assert plan.duration_delta_seconds == pytest.approx(target - 4.0, rel=1e-3)
 
     # SRT cues should be stretched by internal_scale = 1/video_speed (video slows down → cues longer)
-    internal_scale = 1.0 / ideal_video
+    internal_scale = target / 4.0
     expected_cue1_end = srt_timestamp_to_seconds(payload.srt[0].end)
     assert expected_cue1_end == pytest.approx(4 * internal_scale, rel=1e-3)
 
@@ -152,7 +147,7 @@ def test_sync_speed_balance_small_overflow():
     assert expected_cue2_start == pytest.approx(4 + plan.duration_delta_seconds, rel=1e-3)
 
 
-def test_sync_speed_balance_hits_video_min_cap():
+def test_sync_duration_balance_hits_video_min_cap():
     """Video slowdown capped at SAFE_VIDEO_MIN_SOFT, voice compensates."""
     payload = _payload_two_segments()
     # Scene=4s, Voice=5.0s → ratio=1.25
@@ -161,25 +156,37 @@ def test_sync_speed_balance_hits_video_min_cap():
     plans = _plan_and_apply(payload, {1: 5.0, 2: 4.0}, source_duration=20.0)
 
     plan = plans[0]
-    assert plan.decision == "sync_speed_balance"
-    assert plan.video_speed_factor == pytest.approx(SAFE_VIDEO_MIN_SOFT, rel=1e-3)
-    expected_voice = 1.25 * SAFE_VIDEO_MIN_SOFT  # 1.15
-    assert plan.speed_factor == pytest.approx(expected_voice, rel=1e-3)
+    assert plan.decision == "sync_duration_balance"
+    target = 4.0 + (5.0 - 4.0) * 0.5
+    assert plan.video_speed_factor == pytest.approx(4.0 / target, rel=1e-3)
+    assert plan.speed_factor == pytest.approx(5.0 / target, rel=1e-3)
     assert plan.extend_seconds == 0.0
 
 
-def test_balanced_too_large_overflow_falls_back_to_footage_extend():
-    """Voice too long for balanced approach → fallback footage_extend, no video speed."""
+def test_duration_balance_10s_scene_14s_voice_uses_midpoint_with_video_cap():
+    payload = _payload_long_scene()
+    plans = _plan_and_apply(payload, {1: 14.0}, source_duration=20.0)
+
+    plan = plans[0]
+    assert plan.decision == "sync_duration_balance"
+    target = 10.0 / SAFE_VIDEO_MIN_SOFT
+    assert plan.required_duration == pytest.approx(target, rel=1e-3)
+    assert plan.video_speed_factor == pytest.approx(SAFE_VIDEO_MIN_SOFT, rel=1e-3)
+    assert plan.speed_factor == pytest.approx(14.0 / target, rel=1e-3)
+
+
+def test_balanced_large_overflow_clamps_to_video_slowdown_cap():
+    """Voice too long for midpoint target clamps to video slowdown cap before fallback."""
     payload = _payload_two_segments()
-    # Scene=4s, Voice=7s → ratio=1.75
-    # ideal_video=0.756 < 0.92 → video_speed=0.92
-    # voice_speed=1.75*0.92=1.61 > max_speed(1.5) → fallback
+    # Scene=4s, Voice=7s → 50/50 target=5.5 but video slowdown clamps to 4/0.85.
     plans = _plan_and_apply(payload, {1: 7.0, 2: 4.0}, source_duration=20.0)
 
     plan = plans[0]
-    assert plan.decision == "footage_extend"
-    assert plan.video_speed_factor == 1.0  # no video speed in fallback
-    assert plan.extend_seconds == pytest.approx(3.0)  # original overflow (7-4)
+    assert plan.decision == "sync_duration_balance"
+    target = 4.0 / SAFE_VIDEO_MIN_SOFT
+    assert plan.required_duration == pytest.approx(target, rel=1e-3)
+    assert plan.video_speed_factor == pytest.approx(SAFE_VIDEO_MIN_SOFT, rel=1e-3)
+    assert plan.speed_factor == pytest.approx(7.0 / target, rel=1e-3)
 
 
 def test_sync_video_trim_speedup_small_underflow():
@@ -227,7 +234,7 @@ def test_sync_video_trim_speedup_capped_large_underflow():
 
 
 def test_srt_local_scaling_with_multiple_cues_in_segment():
-    """Multi-cue segment with video slowdown → all internal cues stretched proportionally."""
+    """Multi-cue segment with video slowdown → cues are redistributed by natural voice duration."""
     payload = _payload_three_cues()
     # Segment 1: scene=6s (0-6), two cues (0-3, 3-6)
     # Cue1=3.2s, Cue2=3.3s → total=6.5s, diff=0.5 > tolerance=0.30
@@ -236,23 +243,20 @@ def test_srt_local_scaling_with_multiple_cues_in_segment():
     plans = _plan_and_apply(payload, {1: 3.2, 2: 3.3, 3: 4.0}, source_duration=20.0)
 
     plan = plans[0]
-    assert plan.decision == "sync_speed_balance"
-    v_speed = plan.video_speed_factor
-    assert v_speed < 1.0  # slowdown
+    assert plan.decision == "sync_duration_balance"
+    assert plan.video_speed_factor < 1.0  # slowdown
 
-    # Internal scale = 1/video_speed > 1 (cues are stretched)
-    internal_scale = 1.0 / v_speed
-    # Cue 1: original 0-3 → stretched to 0 to 3*internal_scale
+    target = 6.0 + (6.5 - 6.0) * 0.5
+    cue1_target = target * (3.2 / 6.5)
     cue1_start = srt_timestamp_to_seconds(payload.srt[0].start)
     cue1_end = srt_timestamp_to_seconds(payload.srt[0].end)
     assert cue1_start == pytest.approx(0.0, abs=0.01)
-    assert cue1_end == pytest.approx(3.0 * internal_scale, rel=1e-3)
+    assert cue1_end == pytest.approx(cue1_target, rel=1e-3)
 
-    # Cue 2: original 3-6 → stretched to (3*internal_scale) to (6*internal_scale)
     cue2_start = srt_timestamp_to_seconds(payload.srt[1].start)
     cue2_end = srt_timestamp_to_seconds(payload.srt[1].end)
-    assert cue2_start == pytest.approx(3.0 * internal_scale, rel=1e-3)
-    assert cue2_end == pytest.approx(6.0 * internal_scale, rel=1e-3)
+    assert cue2_start == pytest.approx(cue1_target, rel=1e-3)
+    assert cue2_end == pytest.approx(target, rel=1e-3)
 
     # Cue 3 (segment 2, unchanged) should be shifted by segment 1 delta
     cue3_start = srt_timestamp_to_seconds(payload.srt[2].start)
@@ -260,7 +264,7 @@ def test_srt_local_scaling_with_multiple_cues_in_segment():
     assert cue3_start == pytest.approx(6.0 + expected_delta, rel=1e-3)
 
 
-def test_sync_speed_balance_preserves_no_change_for_exact_fit():
+def test_sync_duration_balance_preserves_no_change_for_exact_fit():
     """Voice exactly matching scene duration → no_change within tolerance."""
     payload = _payload_two_segments()
     # 4.0 voice in 4.0 scene → diff=0 ≤ tolerance (0.25)

@@ -341,7 +341,6 @@ export function App() {
 
   const [isAutoPipelineRunning, setIsAutoPipelineRunning] = useState(false);
 
-  const [showBrowser, setShowBrowser] = useState(false);
 
   const [geminiSessionStatus, setGeminiSessionStatus] = useState<GeminiSessionStatus | null>(null);
 
@@ -869,7 +868,7 @@ export function App() {
           ytdlp_cookies_file: form.ytdlp_cookies_file || undefined,
 
           user_data_dir: geminiUserDataDir || undefined,
-          headless: !showBrowser,
+          headless: true,
           gemini_thinking_mode: geminiThinkingMode,
 
         });
@@ -925,7 +924,7 @@ export function App() {
 
 
 
-      const res = await startAutoPipeline({ form_data: formPayload, ...renderPayload, headless: !showBrowser, gemini_thinking_mode: geminiThinkingMode });
+      const res = await startAutoPipeline({ form_data: formPayload, ...renderPayload, headless: true, gemini_thinking_mode: geminiThinkingMode });
 
       setAutoPipelineProgress((prev: AutoPipelineProgressData | null) => prev ? { ...prev, task_id: res.task_id } : null);
 
@@ -1345,14 +1344,6 @@ function LicenseGate({ licenseStatus, onActivate, onRefresh }: { licenseStatus: 
                     <option value="standard">Tiêu chuẩn / Standard</option>
                   </select>
                 </div>
-
-                <label className="flex cursor-pointer items-center gap-1.5 text-xs text-slate-300 select-none">
-
-                  <input type="checkbox" checked={showBrowser} onChange={e => setShowBrowser(e.target.checked)} className="h-3.5 w-3.5"/>
-
-                  Hiện trình duyệt
-
-                </label>
 
                 <button className="btn-primary" style={{ background: 'linear-gradient(135deg, #7c3aed, #a855f7)' }} onClick={handleAutoPipeline} disabled={isAutoPipelineRunning}>
 

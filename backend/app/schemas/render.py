@@ -154,6 +154,8 @@ class SegmentPlanItem(BaseModel):
     warning: str = ""
     overrun_seconds: float = 0.0
     duration_delta_seconds: float = 0.0
+    balance_ratio: float | None = None
+    cue_natural_durations: dict[int, float] = Field(default_factory=dict)
 
 
 class GeminiPayloadSchema(BaseModel):

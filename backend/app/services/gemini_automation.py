@@ -9,6 +9,7 @@ import re
 import sys
 import time
 import uuid
+import urllib.parse
 from pathlib import Path
 from collections.abc import Awaitable
 from typing import Any, Callable
@@ -45,6 +46,7 @@ STEP_LABELS: dict[str, str] = {
     "auditing_alignment": "Audit khớp cảnh",
     "repairing_chunk": "Repair chunk",
     "extracting_json": "Trích xuất dữ liệu",
+    "cleanup_gemini": "Hoàn tất xử lý",
     "validating": "Kiểm tra dữ liệu",
     "auto_retry": "Thử lại",
     "submitting_render": "Tạo video",
@@ -81,6 +83,31 @@ GEMINI_SELECTORS = {
         "[data-test-id='stop-generation']",
         "button:has(svg[data-icon='stop'])",
         "button:has(svg[aria-label='Stop'])",
+    ],
+    "conversation_menu": [
+        "button[aria-label*='More']",
+        "button[aria-label*='more']",
+        "button[aria-label*='Thêm']",
+        "button[aria-label*='Tùy chọn']",
+        "[data-test-id*='conversation-menu']",
+    ],
+    "conversation_delete": [
+        "[role='menu'] [data-test-id='delete-button']",
+        "[data-test-id='delete-button']",
+        "[role='menuitem']:has-text('Delete')",
+        "[role='menuitem']:has-text('Xóa')",
+        "button:has-text('Delete')",
+        "button:has-text('Xóa')",
+        "[role='option']:has-text('Delete')",
+        "[role='option']:has-text('Xóa')",
+    ],
+    "conversation_delete_confirm": [
+        "[role='dialog'] gem-button[cdkfocusinitial] button",
+        "[role='dialog'] mat-dialog-actions gem-button:last-of-type button",
+        "button:has-text('Delete')",
+        "button:has-text('Xóa')",
+        "[role='dialog'] button:has-text('Delete')",
+        "[role='dialog'] button:has-text('Xóa')",
     ],
     "sign_in_indicators": [
         "a[href*='signin']",
@@ -208,12 +235,18 @@ class GeminiAutomationTask:
                 logger.exception("Failed to cancel render job %s", self._render_job_id)
             self._render_job_id = None
 
-    def mark_error(self, error: str, _cancel_render_fn: Callable[[str], None] | None = None) -> None:
+    def mark_error(
+        self,
+        error: str,
+        _cancel_render_fn: Callable[[str], None] | None = None,
+        public_error: str | None = None,
+    ) -> None:
         self._cancel_submitted_render(_cancel_render_fn)
         self.status = "error"
         self.step = "error"
-        self.message = error
-        self.error = error
+        visible_error = public_error or error
+        self.message = visible_error
+        self.error = visible_error
         if self.states:
             cur = self.states[-1]
             if cur["end_ts"] is None:
@@ -878,7 +911,9 @@ class GeminiAutomationService:
                             form_data: dict | None = None, dry_run: bool = False) -> None:
         browser = None
         context = None
-        headless_resolved = settings.playwright_headless if headless is None else headless
+        # Auto Pipeline never exposes its working browser. Interactive login is
+        # handled separately by the explicit session-verification action.
+        headless_resolved = True
 
         active_browser_id = self._active_standalone_browser_id()
         if active_browser_id:
@@ -938,13 +973,11 @@ class GeminiAutomationService:
                         )
                         task._context = context
                 else:
-                    task.update("navigate_gemini", "Gemini chưa đăng nhập. Đang mở trình duyệt để bạn đăng nhập lần đầu.")
-                    browser, context, page = await self._launch_stealth_context(
-                        pw, headless=False,
-                        persistent=True,
-                        persistent_profile_path=profile_path,
+                    task.mark_error(
+                        "Gemini chưa được xác minh đăng nhập. Hãy bấm 'Mở trình duyệt Gemini' "
+                        "để xác minh trước khi chạy Auto Pipeline."
                     )
-                    task._context = context
+                    return
 
                 task.update("navigate_gemini", "Đang truy cập Gemini...")
                 await page.goto(settings.gemini_url, wait_until="domcontentloaded")
@@ -990,6 +1023,12 @@ class GeminiAutomationService:
 
                 response_text = await self._wait_for_response(task, page, context)
                 await asyncio.sleep(0)  # yield → WS handler thấy "waiting_response"
+                if not self._record_audit_exchange(task, prompt_text, response_text, "exchange_001"):
+                    task.mark_error(
+                        "GEMINI_AUDIT_PERSIST_FAILED: không thể lưu response Gemini vào backend audit storage.",
+                        public_error="Không thể hoàn tất xử lý. Vui lòng thử lại.",
+                    )
+                    return
 
                 json_str = ""
                 fallback_detected = False
@@ -1009,6 +1048,12 @@ class GeminiAutomationService:
                             return
                         response_text = await self._wait_for_response(task, page, context)
                         await asyncio.sleep(0)
+                        if not self._record_audit_exchange(task, prompt_text, response_text, f"exchange_{submit_attempt + 1:03d}"):
+                            task.mark_error(
+                                "GEMINI_AUDIT_PERSIST_FAILED: không thể lưu response Gemini vào backend audit storage.",
+                                public_error="Không thể hoàn tất xử lý. Vui lòng thử lại.",
+                            )
+                            return
 
                     for retry in range(3):
                         if task.status != "running":
@@ -1079,6 +1124,67 @@ class GeminiAutomationService:
                         )
                     else:
                         task.mark_error("Không thể trích xuất JSON từ phản hồi Gemini sau 2 lần gửi prompt, mỗi lần 3 lần thử.")
+                    return
+
+                preflight_valid, preflight_errors, preflight_parsed = await self._validate_json_for_render(
+                    task, json_str, render_payload
+                )
+                for repair_attempt in range(2):
+                    if preflight_valid or task.status != "running":
+                        break
+                    repair_prompt = self._build_simple_edl_repair_prompt(preflight_errors)
+                    task.update(
+                        "auto_retry",
+                        f"JSON chưa hợp lệ. Đang yêu cầu Gemini sửa (lần {repair_attempt + 1}/2)...",
+                    )
+                    await self._submit_prompt(task, page, context, repair_prompt, thinking_mode)
+                    simple_submit_count += 1
+                    if task.status != "running":
+                        return
+                    repaired_response = await self._wait_for_response(task, page, context)
+                    await asyncio.sleep(0)
+                    if not self._record_audit_exchange(
+                        task,
+                        repair_prompt,
+                        repaired_response,
+                        f"validation_repair_{repair_attempt + 1:03d}",
+                    ):
+                        task.mark_error(
+                            "GEMINI_AUDIT_PERSIST_FAILED: không thể lưu response repair vào backend audit storage.",
+                            public_error="Không thể hoàn tất xử lý. Vui lòng thử lại.",
+                        )
+                        return
+                    repaired_json = self._extract_json(repaired_response)
+                    if not repaired_json:
+                        preflight_errors = ["Không thể trích xuất JSON hoàn chỉnh từ response repair."]
+                        continue
+                    json_str = repaired_json
+                    response_text = repaired_response
+                    preflight_valid, preflight_errors, preflight_parsed = await self._validate_json_for_render(
+                        task, json_str, render_payload
+                    )
+
+                if preflight_valid and preflight_parsed is not None:
+                    preflight_dump = (
+                        preflight_parsed.model_dump()
+                        if hasattr(preflight_parsed, "model_dump")
+                        else preflight_parsed
+                    )
+                    if isinstance(preflight_dump, dict):
+                        json_str = json.dumps(preflight_dump, ensure_ascii=False)
+
+                if not self._record_audit_json(task, json_str):
+                    task.mark_error(
+                        "GEMINI_AUDIT_PERSIST_FAILED: không thể lưu JSON Gemini vào backend audit storage.",
+                        public_error="Không thể hoàn tất xử lý. Vui lòng thử lại.",
+                    )
+                    return
+                task.update("cleanup_gemini", "Đang hoàn tất xử lý...")
+                if not await self._delete_current_conversation(page, task):
+                    task.mark_error(
+                        "GEMINI_CONVERSATION_CLEANUP_FAILED: không thể xác minh đã xóa phiên trò chuyện Gemini.",
+                        public_error="Không thể hoàn tất xử lý. Vui lòng thử lại.",
+                    )
                     return
 
                 if dry_run:
@@ -1167,6 +1273,12 @@ class GeminiAutomationService:
                 timeout_debug_reason=f"{debug_prefix}_timeout_raw",
             )
             await asyncio.sleep(0)
+            if not self._record_audit_exchange(task, effective_prompt, response_text, f"{debug_prefix}_{submit_attempt + 1:03d}"):
+                task.mark_error(
+                    "GEMINI_AUDIT_PERSIST_FAILED: không thể lưu response Gemini vào backend audit storage.",
+                    public_error="Không thể hoàn tất xử lý. Vui lòng thử lại.",
+                )
+                return None
             json_str = extract_json_fn(response_text)
             if json_str:
                 try:
@@ -1987,6 +2099,179 @@ class GeminiAutomationService:
                 continue
         return None
 
+    def _audit_task_dir(self, task: GeminiAutomationTask) -> Path:
+        return Path(settings.gemini_audit_dir) / task.task_id
+
+    def _write_audit_artifact(self, task: GeminiAutomationTask, name: str, content: str) -> Path:
+        audit_dir = self._audit_task_dir(task)
+        audit_dir.mkdir(parents=True, exist_ok=True)
+        path = audit_dir / name
+        path.write_text(content or "", encoding="utf-8")
+        return path
+
+    def _record_audit_exchange(
+        self,
+        task: GeminiAutomationTask,
+        prompt_text: str,
+        response_text: str,
+        label: str,
+    ) -> bool:
+        if not settings.gemini_audit_enabled:
+            return True
+        try:
+            audit_dir = self._audit_task_dir(task)
+            audit_dir.mkdir(parents=True, exist_ok=True)
+            prompt_path = self._write_audit_artifact(task, f"{label}_prompt.txt", prompt_text)
+            response_path = self._write_audit_artifact(task, f"{label}_response_raw.txt", response_text)
+            manifest_path = audit_dir / "manifest.json"
+            manifest = {}
+            if manifest_path.exists():
+                try:
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                except Exception:
+                    manifest = {}
+            manifest.setdefault("task_id", task.task_id)
+            manifest.setdefault("exchanges", []).append({
+                "label": label,
+                "prompt_file": prompt_path.name,
+                "response_file": response_path.name,
+                "prompt_chars": len(prompt_text),
+                "response_chars": len(response_text),
+                "created_at": time.time(),
+            })
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+            return True
+        except Exception:
+            logger.exception("Failed to persist Gemini audit exchange for task %s", task.task_id)
+            return False
+
+    def _record_audit_json(self, task: GeminiAutomationTask, json_text: str, label: str = "final") -> bool:
+        if not settings.gemini_audit_enabled:
+            return True
+        try:
+            self._write_audit_artifact(task, f"{label}_json.txt", json_text)
+            return True
+        except Exception:
+            logger.exception("Failed to persist Gemini audit JSON for task %s", task.task_id)
+            return False
+
+    async def _click_active_conversation_menu(self, page: Any) -> tuple[bool, str]:
+        current_path = urllib.parse.urlparse(page.url).path.rstrip("/")
+        if not current_path or current_path == "/app":
+            return False, "current URL has no conversation path"
+
+        links = page.locator("a[href*='/app/']")
+        link_count = await links.count()
+        for index in range(link_count):
+            link = links.nth(index)
+            href = await link.get_attribute("href")
+            if not href or urllib.parse.urlparse(href).path.rstrip("/") != current_path:
+                continue
+
+            ancestors = [
+                link.locator("xpath=ancestor::gem-nav-list-item[@data-test-id='conversation'][1]"),
+                link.locator("xpath=ancestor::*[@role='listitem'][1]"),
+                link.locator("xpath=ancestor::li[1]"),
+                link.locator("xpath=..").first,
+            ]
+            for item in ancestors:
+                try:
+                    if await item.count() == 0:
+                        continue
+                    await item.hover(timeout=3000)
+                    await asyncio.sleep(0.3)
+                except Exception:
+                    continue
+                selectors = [
+                    "gem-icon-button[data-test-id='actions-menu-button']",
+                    "[data-test-id='actions-menu-button'] button",
+                    ".gem-conversation-actions-menu-button button",
+                    *GEMINI_SELECTORS["conversation_menu"],
+                ]
+                for selector in selectors:
+                    menu = item.locator(selector).first
+                    try:
+                        if await menu.count() and await menu.is_visible(timeout=1000):
+                            await menu.click(timeout=5000)
+                            return True, f"active_path={current_path}; selector={selector}"
+                    except Exception:
+                        continue
+            return False, f"active conversation found but menu missing: {current_path}"
+
+        return False, f"active conversation link not found: {current_path}"
+
+    async def _save_cleanup_stage_diagnostic(self, task: GeminiAutomationTask | None, page: Any, stage: str) -> None:
+        if not task or not settings.gemini_audit_enabled:
+            return
+        try:
+            audit_dir = self._audit_task_dir(task)
+            audit_dir.mkdir(parents=True, exist_ok=True)
+            (audit_dir / f"cleanup_{stage}_dom.html").write_text(await page.content(), encoding="utf-8")
+            await page.screenshot(path=str(audit_dir / f"cleanup_{stage}.png"), full_page=True)
+        except Exception:
+            logger.exception("Failed to save Gemini cleanup %s diagnostic for task %s", stage, task.task_id)
+
+    async def _save_cleanup_diagnostic(self, task: GeminiAutomationTask, page: Any, reason: str) -> None:
+        logger.error("Gemini conversation cleanup failed for task %s: %s", task.task_id, reason)
+        if not settings.gemini_audit_enabled:
+            return
+        try:
+            audit_dir = self._audit_task_dir(task)
+            audit_dir.mkdir(parents=True, exist_ok=True)
+            (audit_dir / "cleanup_failure.json").write_text(
+                json.dumps({"reason": reason, "url": page.url, "created_at": time.time()}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            try:
+                (audit_dir / "cleanup_failure_dom.html").write_text(await page.content(), encoding="utf-8")
+            except Exception:
+                pass
+            try:
+                await page.screenshot(path=str(audit_dir / "cleanup_failure.png"), full_page=True)
+            except Exception:
+                pass
+        except Exception:
+            logger.exception("Failed to save Gemini cleanup diagnostic for task %s", task.task_id)
+
+    async def _delete_current_conversation(self, page: Any, task: GeminiAutomationTask | None = None) -> bool:
+        """Delete the active conversation through the matching sidebar item."""
+        opened, detail = await self._click_active_conversation_menu(page)
+        if not opened:
+            if task:
+                await self._save_cleanup_diagnostic(task, page, detail)
+            return False
+
+        await self._save_cleanup_stage_diagnostic(task, page, "menu_open")
+
+        delete_selector = await self._click_first_visible(page, GEMINI_SELECTORS["conversation_delete"], timeout_ms=5000)
+        if not delete_selector:
+            if task:
+                await self._save_cleanup_diagnostic(task, page, f"delete action not found; {detail}")
+            return False
+        await asyncio.sleep(0.5)
+        await self._save_cleanup_stage_diagnostic(task, page, "delete_clicked")
+        confirm_selector = await self._click_first_visible(page, GEMINI_SELECTORS["conversation_delete_confirm"], timeout_ms=5000)
+        if not confirm_selector:
+            if task:
+                await self._save_cleanup_diagnostic(task, page, f"confirmation not found; {detail}")
+            return False
+
+        await asyncio.sleep(1.5)
+        if await self._active_conversation_present(page):
+            if task:
+                await self._save_cleanup_diagnostic(task, page, f"conversation still present; {detail}")
+            return False
+        return True
+
+    async def _active_conversation_present(self, page: Any) -> bool:
+        current_path = urllib.parse.urlparse(page.url).path.rstrip("/")
+        links = page.locator("a[href*='/app/']")
+        for index in range(await links.count()):
+            href = await links.nth(index).get_attribute("href")
+            if href and urllib.parse.urlparse(href).path.rstrip("/") == current_path:
+                return True
+        return False
+
     async def _click_google_account_if_available(self, page: Any) -> str | None:
         selectors = [
             "div[data-identifier]",
@@ -2545,6 +2830,8 @@ class GeminiAutomationService:
 
     async def _save_prompt_text(self, task: GeminiAutomationTask, prompt: str, stem: str) -> None:
         try:
+            if settings.gemini_audit_enabled:
+                self._write_audit_artifact(task, f"{stem}_prompt.txt", prompt)
             debug_path = settings.temp_dir / "gemini_failed_response"
             debug_path.mkdir(parents=True, exist_ok=True)
             path = debug_path / f"{task.task_id}_{stem}.txt"
@@ -2565,7 +2852,7 @@ class GeminiAutomationService:
                 f"timeout_seconds: {settings.gemini_timeout_seconds}\n"
                 f"{'=' * 60}\n"
             )
-            path.write_text(header + response_text[:20000], encoding="utf-8")
+            path.write_text(header + response_text, encoding="utf-8")
             logger.warning("Gemini debug saved to %s (reason: %s)", path, reason)
         except Exception:
             pass
@@ -2626,7 +2913,7 @@ class GeminiAutomationService:
                 try:
                     debug_path = settings.temp_dir / "gemini_failed_response"
                     debug_path.mkdir(parents=True, exist_ok=True)
-                    (debug_path / f"{task.task_id}_{reason}_partial_candidate.txt").write_text(candidate[:20000], encoding="utf-8")
+                    (debug_path / f"{task.task_id}_{reason}_partial_candidate.txt").write_text(candidate, encoding="utf-8")
                 except Exception:
                     pass
 
@@ -2730,7 +3017,12 @@ class GeminiAutomationService:
                 )
                 return ""
 
-            if done_indicator and json_ready and stable_ready:
+            # A visible Copy button is a stronger completion signal than the
+            # DOM snapshot, which can still contain the prompt and schema.
+            # Read it after a short stability grace period so invalid/truncated
+            # output reaches the existing retry flow instead of timing out.
+            clipboard_probe_ready = copy_ready and stable_ready and elapsed >= 30
+            if done_indicator and stable_ready and (json_ready or clipboard_probe_ready):
                 final_text = await self._finalize_response_text(context, page, text, extract_json_fn=extract_json_fn)
                 task.update("waiting_response", "Đã nhận kết quả từ Gemini.")
                 return final_text
@@ -2837,6 +3129,21 @@ class GeminiAutomationService:
 
     def _extract_json(self, response_text: str) -> str:
         return self._extract_json_by_predicate(response_text, self._looks_like_gemini_edl_root)
+
+    @staticmethod
+    def _build_simple_edl_repair_prompt(errors: list[str]) -> str:
+        issue_lines = "\n".join(f"- {error}" for error in errors[:10])
+        return (
+            "REPAIR JSON VỪA TRẢ VỀ. JSON hiện tại chưa hợp lệ:\n"
+            f"{issue_lines}\n\n"
+            "Trả lại TOÀN BỘ JSON object đã sửa, không dùng Markdown và không giải thích. "
+            "Giữ nguyên dữ kiện đã xác minh, schema và URL nguồn. "
+            "rewrite_script.full_text phải được tạo bằng cách ghép NGUYÊN VĂN srt[].text theo index; "
+            "không viết hai phiên bản độc lập, không đổi từ hoặc dấu câu. "
+            "metadata.target_duration phải bằng chính xác end của SRT cuối. "
+            "Mọi video_segments item phải có đầy đủ field bắt buộc, gồm scene_description. "
+            "Tự parse và kiểm tra lại JSON trước khi trả."
+        )
 
     def _extract_analysis_json(self, response_text: str) -> str:
         return self._extract_json_by_predicate(response_text, looks_like_analysis_root)
@@ -2979,6 +3286,12 @@ class GeminiAutomationService:
                 logger.warning("Gemini JSON validation failed for task %s. Debug files saved to %s/", task.task_id, debug_path)
             except Exception:
                 pass
+            if settings.gemini_audit_enabled:
+                try:
+                    self._write_audit_artifact(task, "validation_errors.json", json.dumps(errors[:10], ensure_ascii=False, indent=2))
+                    self._write_audit_artifact(task, "validation_input.json", json_str)
+                except Exception:
+                    logger.exception("Failed to save validation audit for task %s", task.task_id)
             return False, errors, None
 
         task.update("validating", "JSON hợp lệ.")
@@ -2993,7 +3306,10 @@ class GeminiAutomationService:
     async def _validate_without_render(self, task: GeminiAutomationTask, json_str: str, render_payload: dict) -> None:
         valid, errors, parsed = await self._validate_json_for_render(task, json_str, render_payload)
         if not valid:
-            task.mark_error(f"Nội dung JSON Gemini trả về không hợp lệ: {'; '.join(errors[:3])}. Hãy kiểm tra lại prompt hoặc thử lại sau.")
+            task.mark_error(
+                f"Nội dung JSON Gemini trả về không hợp lệ: {'; '.join(errors[:3])}. Hãy kiểm tra lại prompt hoặc thử lại sau.",
+                public_error="Nội dung chưa thể xử lý tự động. Vui lòng thử lại.",
+            )
             return
         dump = parsed.model_dump() if hasattr(parsed, "model_dump") else parsed
         await self._save_json_debug(task, "dry_run_final_validated", dump if isinstance(dump, dict) else {"payload": dump})
@@ -3009,7 +3325,10 @@ class GeminiAutomationService:
     async def _validate_and_render(self, task: GeminiAutomationTask, json_str: str, render_payload: dict) -> None:
         valid, errors, parsed = await self._validate_json_for_render(task, json_str, render_payload)
         if not valid:
-            task.mark_error(f"Nội dung JSON Gemini trả về không hợp lệ: {'; '.join(errors[:3])}. Hãy kiểm tra lại prompt hoặc thử lại sau.")
+            task.mark_error(
+                f"Nội dung JSON Gemini trả về không hợp lệ: {'; '.join(errors[:3])}. Hãy kiểm tra lại prompt hoặc thử lại sau.",
+                public_error="Nội dung chưa thể xử lý tự động. Vui lòng thử lại.",
+            )
             return
 
         dump = parsed.model_dump() if hasattr(parsed, "model_dump") else parsed

@@ -49,6 +49,7 @@ def test_alignment_warnings_for_long_dense_segment():
     payload = valid_payload()
     payload["srt"][0]["end"] = "00:00:10,000"
     payload["srt"][0]["text"] = "Player runs then crosses and striker shoots finally."
+    payload["rewrite_script"]["full_text"] = payload["srt"][0]["text"]
     payload["video_segments"][0]["source_end"] = "00:00:10.000"
     warnings = JsonValidator().alignment_warnings(payload)
     assert any("Segment #1 dài" in warning for warning in warnings)
@@ -111,6 +112,7 @@ def test_validate_json_tts_hybrid_rejects_large_shortage():
 
 def test_validate_json_tts_hybrid_repairs_mixed_duration_mismatch():
     payload = valid_payload()
+    payload["rewrite_script"]["full_text"] = "Một Hai"
     payload["srt"] = [
         {"index": 1, "start": "00:00:00,000", "end": "00:00:15,000", "text": "Một"},
         {"index": 2, "start": "00:00:15,000", "end": "00:00:30,000", "text": "Hai"},
@@ -299,6 +301,7 @@ def test_validate_srt_overlap_fails():
 
 def test_validate_srt_tiny_overlap_auto_fix():
     payload = valid_payload()
+    payload["rewrite_script"]["full_text"] = "Hơi dài OK"
     payload["srt"] = [
         {"index": 1, "start": "00:00:00,000", "end": "00:00:06,200", "text": "Hơi dài"},
         {"index": 2, "start": "00:00:06,000", "end": "00:00:10,000", "text": "OK"},
@@ -311,6 +314,109 @@ def test_validate_srt_tiny_overlap_auto_fix():
     assert model is not None
     cue1_end = fixed_payload["srt"][0]["end"]
     assert cue1_end == "00:00:06,000", f"Expected trimmed to 00:00:06,000 but got {cue1_end}"
+
+
+def test_validate_terminal_segment_must_cover_last_srt():
+    payload = valid_payload()
+    payload["srt"] = [
+        {"index": 1, "start": "00:00:00,000", "end": "00:00:03,000", "text": "Mở đầu"},
+        {"index": 2, "start": "00:00:03,000", "end": "00:00:06,000", "text": "Kết thúc"},
+    ]
+    payload["rewrite_script"]["full_text"] = "Mở đầu Kết thúc"
+    payload["video_segments"][0]["source_end"] = "00:00:03.000"
+    payload["video_segments"][0]["subtitle_end"] = 1
+
+    valid, errors, _ = JsonValidator().validate(payload)
+
+    assert valid is False
+    assert any(error.startswith("TIMELINE_TERMINAL_SYNC_MISMATCH") for error in errors)
+
+
+def test_validate_unmapped_srt_index_fails():
+    payload = valid_payload()
+    payload["srt"] = [
+        {"index": 1, "start": "00:00:00,000", "end": "00:00:03,000", "text": "Một"},
+        {"index": 2, "start": "00:00:03,000", "end": "00:00:06,000", "text": "Hai"},
+    ]
+    payload["rewrite_script"]["full_text"] = "Một Hai"
+    payload["video_segments"][0]["source_end"] = "00:00:03.000"
+    payload["video_segments"][0]["subtitle_end"] = 1
+
+    valid, errors, _ = JsonValidator().validate(payload)
+
+    assert valid is False
+    assert any(error.startswith("TIMELINE_UNMAPPED_SRT") for error in errors)
+
+
+def test_validate_wide_range_mapping_covers_sequential_srt():
+    payload = valid_payload()
+    payload["srt"] = [
+        {"index": 1, "start": "00:00:00,000", "end": "00:00:02,000", "text": "Một"},
+        {"index": 2, "start": "00:00:02,000", "end": "00:00:04,000", "text": "Hai"},
+    ]
+    payload["rewrite_script"]["full_text"] = "Một Hai"
+    payload["video_segments"][0].update({
+        "source_end": "00:00:04.000",
+        "subtitle_end": 2,
+    })
+
+    valid, errors, _ = JsonValidator().validate(payload)
+
+    assert valid is True
+    assert errors == []
+
+
+def test_validate_full_text_mismatch_fails_without_auto_fix():
+    payload = valid_payload()
+    payload["rewrite_script"]["full_text"] = "Nội dung khác"
+
+    valid, errors, model, fixed_payload = JsonValidator().validate_with_auto_fix(payload)
+
+    assert valid is False
+    assert model is None
+    assert fixed_payload is None
+    assert any(error.startswith("TIMELINE_FULL_TEXT_MISMATCH") for error in errors)
+
+
+def test_validate_does_not_auto_fix_semantic_full_text_mismatch():
+    payload = valid_payload()
+    payload["rewrite_script"]["full_text"] = "Xin chào bạn, hôm nay chúng ta cùng bắt đầu câu chuyện."
+    payload["srt"][0]["text"] = "Xin chào bạn hôm nay chúng ta cùng bắt đầu câu chuyện."
+    payload["video_segments"][0]["source_end"] = "00:00:08.000"
+
+    valid, errors, model, fixed_payload = JsonValidator().validate_with_auto_fix(
+        payload,
+        render_options=RenderOptions(tts_mode="voiceover", tts_fit_policy="hybrid"),
+    )
+
+    assert valid is False
+    assert model is None
+    assert fixed_payload is None
+    assert any(error.startswith("TIMELINE_FULL_TEXT_MISMATCH") for error in errors)
+
+
+def test_validate_fails_when_exact_target_duration_is_incomplete():
+    payload = valid_payload()
+    payload["metadata"]["target_duration"] = "4 phút"
+    payload["srt"][0]["end"] = "00:01:15,000"
+    payload["video_segments"][0]["source_end"] = "00:01:15.000"
+
+    valid, errors, _ = JsonValidator().validate(payload)
+
+    assert valid is False
+    assert any(error.startswith("TIMELINE_DURATION_INCOMPLETE") for error in errors)
+
+
+def test_validate_exact_target_duration_passes():
+    payload = valid_payload()
+    payload["metadata"]["target_duration"] = "4 phút"
+    payload["srt"][0]["end"] = "00:04:00,000"
+    payload["video_segments"][0]["source_end"] = "00:04:00.000"
+
+    valid, errors, _ = JsonValidator().validate(payload)
+
+    assert valid is True
+    assert errors == []
 
 
 def test_validate_srt_large_overlap_no_auto_fix():

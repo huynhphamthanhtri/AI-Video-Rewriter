@@ -1,4 +1,9 @@
-from app.services.gemini_automation import GeminiAutomationService
+import asyncio
+import json
+from unittest.mock import AsyncMock
+
+from app.core.config import settings
+from app.services.gemini_automation import GeminiAutomationService, GeminiAutomationTask
 
 
 def test_automation_pipeline_no_longer_accepts_analysis_mode():
@@ -6,6 +11,71 @@ def test_automation_pipeline_no_longer_accepts_analysis_mode():
 
     signature = inspect.signature(GeminiAutomationService._run_pipeline)
     assert "analysis_mode" not in signature.parameters
+
+
+def test_gemini_audit_is_opt_in_and_writes_local_task_artifacts(tmp_path, monkeypatch):
+    service = GeminiAutomationService()
+    task = GeminiAutomationTask("audit-test")
+    monkeypatch.setattr(settings, "gemini_audit_enabled", True)
+    monkeypatch.setattr(settings, "gemini_audit_dir", tmp_path)
+
+    assert service._record_audit_exchange(task, "secret prompt", '{"ok":true}', "exchange_001") is True
+    assert service._record_audit_json(task, '{"ok":true}') is True
+
+    audit_dir = tmp_path / "audit-test"
+    assert (audit_dir / "exchange_001_prompt.txt").read_text(encoding="utf-8") == "secret prompt"
+    assert (audit_dir / "exchange_001_response_raw.txt").read_text(encoding="utf-8") == '{"ok":true}'
+    assert (audit_dir / "final_json.txt").exists()
+    manifest = json.loads((audit_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["task_id"] == "audit-test"
+
+
+def test_gemini_audit_disabled_does_not_write_full_payload(tmp_path, monkeypatch):
+    service = GeminiAutomationService()
+    task = GeminiAutomationTask("audit-disabled")
+    monkeypatch.setattr(settings, "gemini_audit_enabled", False)
+    monkeypatch.setattr(settings, "gemini_audit_dir", tmp_path)
+
+    assert service._record_audit_exchange(task, "secret prompt", "secret response", "exchange_001") is True
+    assert not (tmp_path / "audit-disabled").exists()
+
+
+def test_delete_current_conversation_requires_menu_delete_and_confirmation(monkeypatch):
+    service = GeminiAutomationService()
+    monkeypatch.setattr(service, "_click_active_conversation_menu", AsyncMock(return_value=(True, "active")))
+    clicks = AsyncMock(side_effect=["delete", "confirm"])
+    monkeypatch.setattr(service, "_click_first_visible", clicks)
+    monkeypatch.setattr(service, "_active_conversation_present", AsyncMock(return_value=False))
+
+    assert asyncio.run(service._delete_current_conversation(object())) is True
+
+
+def test_auto_pipeline_forces_headless_mode():
+    import inspect
+
+    source = inspect.getsource(GeminiAutomationService._run_pipeline)
+    assert "headless_resolved = True" in source
+
+
+def test_internal_cleanup_error_is_not_exposed_to_user():
+    task = GeminiAutomationTask("public-error")
+    task.mark_error("GEMINI_CONVERSATION_CLEANUP_FAILED: selector detail", public_error="Không thể hoàn tất xử lý.")
+
+    assert task.error == "Không thể hoàn tất xử lý."
+    assert "GEMINI_CONVERSATION" not in task.error
+
+
+def test_simple_edl_repair_prompt_contains_validation_errors_and_strict_gates():
+    prompt = GeminiAutomationService._build_simple_edl_repair_prompt([
+        "TIMELINE_FULL_TEXT_MISMATCH",
+        "TIMELINE_DURATION_INCOMPLETE",
+    ])
+
+    assert "TIMELINE_FULL_TEXT_MISMATCH" in prompt
+    assert "TIMELINE_DURATION_INCOMPLETE" in prompt
+    assert "ghép NGUYÊN VĂN srt[].text" in prompt
+    assert "end của SRT cuối" in prompt
+    assert "scene_description" in prompt
 
 
 def make_valid_edl_dict(title="10 Phút Nấu Phở", script="Hôm nay chúng ta sẽ cùng học nấu phở.", srt_text="Hôm nay chúng ta sẽ cùng học nấu phở"):

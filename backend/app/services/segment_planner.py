@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import math
 from typing import Any
 
 from app.schemas.render import (
@@ -17,9 +16,10 @@ logger = logging.getLogger(__name__)
 
 # Safe speed limits for bidirectional sync optimizer (hardcoded, not configurable)
 # Video slowdown helps give voice more room when voice > scene
-SAFE_VIDEO_MIN_SOFT = 0.92
+SAFE_VIDEO_MIN_SOFT = 0.85
 SAFE_VIDEO_MAX_SOFT = 1.15
 SAFE_VOICE_MAX_SOFT = 1.25
+VOICE_OVER_BALANCE_RATIO = 0.5
 SYNC_TOLERANCE_SECONDS = 0.25
 SYNC_TOLERANCE_RATIO = 0.05
 
@@ -86,6 +86,11 @@ class SegmentPlanner:
                 policy=options.tts_fit_policy,
                 max_speed=options.tts_max_speed,
             )
+            plan.cue_natural_durations = {
+                idx: natural_durations.get(idx, 0.0)
+                for idx in srt_indices
+                if natural_durations.get(idx, 0.0) > 0
+            }
             plans.append(plan)
 
         return plans
@@ -131,28 +136,20 @@ class SegmentPlanner:
 
         # ── Case B: voice longer than scene ──
         if overflow > 0:
-            ratio = total_natural / scene_duration
-            # Balanced: slow down video (=> scene lasts longer) and speed up voice
-            #   voice / voice_speed <= scene / video_speed  (video_speed < 1.0)
-            #   => voice_speed >= ratio * video_speed
-            #   Equal perceptual load: video_speed = 1/sqrt(ratio), voice_speed = sqrt(ratio)
-            ideal_video = 1.0 / math.sqrt(ratio)
-            if ideal_video >= SAFE_VIDEO_MIN_SOFT:
-                # Neither cap hit — use exact balanced fit
-                video_speed = ideal_video
-                voice_speed = math.sqrt(ratio)
-            else:
-                # Video hits min cap — voice must compensate more
-                video_speed = SAFE_VIDEO_MIN_SOFT
-                voice_speed = ratio * video_speed
+            target_duration = scene_duration + overflow * VOICE_OVER_BALANCE_RATIO
+            min_target_by_voice = total_natural / max(max_speed, 0.001)
+            max_target_by_video = scene_duration / SAFE_VIDEO_MIN_SOFT
+            target_duration = min(max(target_duration, min_target_by_voice), max_target_by_video)
+            video_speed = scene_duration / max(target_duration, 0.001)
+            voice_speed = total_natural / max(target_duration, 0.001)
 
-            if voice_speed <= max_speed:
-                eff_scene = scene_duration / video_speed
+            if video_speed >= SAFE_VIDEO_MIN_SOFT and voice_speed <= max_speed:
                 plan.video_speed_factor = video_speed
                 plan.speed_factor = voice_speed
-                plan.decision = "sync_speed_balance"
-                plan.required_duration = eff_scene
-                plan.duration_delta_seconds = eff_scene - scene_duration
+                plan.decision = "sync_duration_balance"
+                plan.required_duration = target_duration
+                plan.duration_delta_seconds = target_duration - scene_duration
+                plan.balance_ratio = VOICE_OVER_BALANCE_RATIO
                 self._attach_timing_warning(plan)
                 return plan
 

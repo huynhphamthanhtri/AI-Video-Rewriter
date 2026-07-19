@@ -14,21 +14,15 @@ from app.services.prompt_generator import PromptGenerator
 DUMMY_URL = HttpUrl("https://www.youtube.com/watch?v=preview_dummy")
 
 SECTION_MARKERS: list[tuple[str, str]] = [
-    ("Role", "LỚP 1"),
-    ("Source Rules", "CHỐNG BỊA NỘI DUNG"),
-    ("Intent", "CẤU HÌNH VIẾT LẠI"),
-    ("Strategy", "LỚP 2"),
-    ("Localization", "NGÔN NGỮ VÀ BẢN ĐỊA HÓA"),
-    ("Story", "LỚP 3"),
-    ("Subtitle Rules", "RÀNG BUỘC SUBTITLE"),
-    ("Content Quality", "CHẤT LƯỢNG NỘI DUNG"),
-    ("Hook Requirements", "HOOK BẮT BUỘC"),
-    ("Task Assignment", "NHIỆM VỤ"),
-    ("Alignment Rules", "SRT-SCENE ALIGNMENT RULES"),
-    ("Domain Rules", "DOMAIN RULES"),
-    ("Validation", "QUY TẮC JSON BẮT BUỘC:"),
-    ("Output Contract", "STRICT OUTPUT CONTRACT"),
+    ("Source Verification", "I. NGUYÊN TẮC XÁC MINH NGUỒN"),
+    ("Creative Objectives", "II. MỤC TIÊU SÁNG TẠO"),
+    ("Dynamic Pacing", "III. DYNAMIC PACING VÀ LONG-HORIZON PLANNING"),
+    ("Timing", "IV. QUY TẮC TIMING VÀ VOICEOVER"),
+    ("Consistency", "V. TÍNH NHẤT QUÁN GIỮA CÁC PHẦN"),
+    ("Timestamp", "VI. ĐỊNH DẠNG TIMESTAMP"),
+    ("Output Contract", "VII. OUTPUT CONTRACT"),
     ("Schema", "Schema bắt buộc"),
+    ("Final Self-Check", "IX. FINAL SELF-CHECK TRƯỚC KHI OUTPUT"),
 ]
 
 

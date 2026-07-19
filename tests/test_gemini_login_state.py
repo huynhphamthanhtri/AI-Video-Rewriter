@@ -789,6 +789,40 @@ def test_wait_for_response_returns_when_json_ready_and_stable(monkeypatch):
     asyncio.run(run())
 
 
+def test_wait_for_response_uses_clipboard_when_dom_has_no_json(monkeypatch):
+    from unittest.mock import AsyncMock
+    import app.services.gemini_automation as automation_module
+
+    service = GeminiAutomationService()
+    task = GeminiAutomationTask("test-clipboard-fallback")
+    task.status = "running"
+
+    valid_json = json.dumps({
+        "metadata": {"video_title": "Clipboard"},
+        "rewrite_script": {"full_text": "Hello"},
+        "srt": [{"index": 1, "start": "00:00:00,000", "end": "00:00:03,000", "text": "Hello"}],
+        "video_segments": [{"segment_id": 1, "order": 1, "source_start": "00:00:00.000", "source_end": "00:00:03.000", "subtitle_start": 1, "subtitle_end": 1, "scene_description": "Test"}],
+    })
+
+    monkeypatch.setattr(settings, "gemini_timeout_seconds", 60)
+    monkeypatch.setattr(service, "_has_gemini_copy_button", AsyncMock(return_value=True))
+    monkeypatch.setattr(service, "_read_gemini_response_snapshot", AsyncMock(return_value=("body contains prompt and no final JSON", "body_fallback")))
+    monkeypatch.setattr(service, "_extract_json", lambda text: text if "video_segments" in text else "")
+    finalize = AsyncMock(return_value=valid_json)
+    monkeypatch.setattr(service, "_finalize_response_text", finalize)
+    monkeypatch.setattr(automation_module.asyncio, "sleep", AsyncMock())
+
+    clock = iter(range(0, 200, 2))
+    monkeypatch.setattr(automation_module.time, "monotonic", lambda: next(clock))
+
+    async def run():
+        result = await service._wait_for_response(task, _mock_page(), AsyncMock())
+        assert result == valid_json
+
+    asyncio.run(run())
+    assert finalize.await_count == 1
+
+
 def test_extract_json_passes_response_with_login_keyword_in_content():
     """Regression: _extract_json must return JSON even if response text contains
     'đăng nhập' or 'sign in' inside the script content, not as a login page."""

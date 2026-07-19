@@ -756,8 +756,16 @@ def _apply_segment_plan_to_payload(payload: GeminiPayloadSchema, segment_plans: 
             accum += delta
             continue
 
+        use_voice_weighted_slots = (
+            p.decision == "sync_duration_balance"
+            and p.cue_natural_durations
+            and sum(p.cue_natural_durations.get(idx, 0.0) for idx in range(seg.subtitle_start, seg.subtitle_end + 1)) > 0
+        )
+
         # Compute scale for internal cue timing (compression/expansion)
-        if p.decision in ("sync_video_hard_trim", "sync_video_soft_trim"):
+        if use_voice_weighted_slots:
+            internal_scale = 1.0
+        elif p.decision in ("sync_video_hard_trim", "sync_video_soft_trim"):
             # Both hard and soft trim change final duration beyond video speed alone:
             # scale internal cue timing by the actual required_duration / orig_dur
             internal_scale = final_dur / max(orig_dur, 0.001)
@@ -768,6 +776,8 @@ def _apply_segment_plan_to_payload(payload: GeminiPayloadSchema, segment_plans: 
         seg_start_orig = srt_timestamp_to_seconds(first_cue.start)
         seg_start_final = seg_start_orig + accum
 
+        segment_cursor = seg_start_final
+        total_voice = sum(p.cue_natural_durations.get(idx, 0.0) for idx in range(seg.subtitle_start, seg.subtitle_end + 1))
         for idx in range(seg.subtitle_start, seg.subtitle_end + 1):
             cue = srt_by_index.get(idx)
             if not cue:
@@ -776,10 +786,20 @@ def _apply_segment_plan_to_payload(payload: GeminiPayloadSchema, segment_plans: 
             orig_start = srt_timestamp_to_seconds(cue.start)
             orig_end = srt_timestamp_to_seconds(cue.end)
 
-            local_start = orig_start - seg_start_orig
-            local_end = orig_end - seg_start_orig
-            new_start = seg_start_final + local_start * internal_scale
-            new_end = seg_start_final + local_end * internal_scale
+            if use_voice_weighted_slots:
+                cue_voice = p.cue_natural_durations.get(idx, 0.0)
+                if cue_voice > 0:
+                    cue_duration = final_dur * (cue_voice / total_voice)
+                else:
+                    cue_duration = max(0.05, orig_end - orig_start)
+                new_start = segment_cursor
+                new_end = new_start + cue_duration
+                segment_cursor = new_end
+            else:
+                local_start = orig_start - seg_start_orig
+                local_end = orig_end - seg_start_orig
+                new_start = seg_start_final + local_start * internal_scale
+                new_end = seg_start_final + local_end * internal_scale
 
             # For the last cue, add extend_seconds (scaled by video_speed)
             if idx == seg.subtitle_end and extend > 0:

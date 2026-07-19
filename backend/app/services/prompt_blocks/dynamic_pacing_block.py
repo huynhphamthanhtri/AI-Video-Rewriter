@@ -1,0 +1,57 @@
+from __future__ import annotations
+
+from app.schemas.prompt import PromptGenerateRequest
+from app.services.prompt_blocks.base import PromptBlock
+
+
+class DynamicPacingBlock(PromptBlock):
+    def render(self, data: PromptGenerateRequest) -> str:
+        return (
+            "III. DYNAMIC PACING VÀ LONG-HORIZON PLANNING:\n"
+            f"- Thời lượng remake mục tiêu: {data.target_duration}.\n"
+            "- Trước khi tạo script hoặc JSON, phải đọc toàn bộ target duration, phân tích narrative arc, "
+            "lập structural budget nội bộ và phân bổ mật độ index từ đầu đến cuối timeline.\n"
+            "- Trước ký tự '{' đầu tiên, phải quy đổi target duration thành T_target_seconds và chọn pacing profile. "
+            "Tính số SRT tối thiểu theo công thức N_min = ceil(T_target_seconds / average_profile_duration_seconds).\n"
+            "- Ví dụ: T_target_seconds=255 và MEDIUM trung bình 8 giây/SRT thì N_min=ceil(255/8)=32 SRT. "
+            "N_min là kế hoạch tối thiểu phủ timeline, không phải hardcoded array limit.\n"
+            "- Nếu target_duration là một khoảng, hãy chọn một planned runtime cụ thể trong khoảng dựa trên "
+            "độ phức tạp narrative và ghi runtime cụ thể đó vào metadata.target_duration. Nếu là thời lượng tự đề xuất, "
+            "phải ước tính runtime trước khi tạo JSON.\n"
+            "- Nếu target_duration là một giá trị chính xác, phải khóa T_target_seconds theo đúng giá trị đó; "
+            "metadata.target_duration và SRT cuối cùng phải cùng biểu diễn chính xác runtime này.\n"
+            "- Trước khi output, tính lại end của SRT cuối bằng số học. Nếu chưa bằng T_target_seconds thì phải "
+            "phân bổ lại duration hoặc bổ sung visual/narrative beat đã xác minh; không được chỉ khai target dài hơn timeline.\n"
+            "- Sau khi chốt srt[], tạo rewrite_script.full_text bằng cách ghép nguyên văn srt[].text theo index, "
+            "không viết lại, không đổi dấu câu và không bỏ bất kỳ câu nào.\n"
+            "- Không bắt đầu final JSON cho đến khi internal draft đã bao phủ đầy đủ phần mở đầu, diễn tiến, cao trào và kết luận.\n"
+            "\n"
+            "NARRATIVE EXPANSION STRATEGY:\n"
+            "- Nếu source script ngắn hơn target duration, không kéo một subtitle vượt giới hạn profile đã chọn.\n"
+            "- Chia nhỏ các hành động đã xác minh trong video nguồn thành nhiều visual beat chi tiết hơn.\n"
+            "- Mở rộng narration bằng phân tích nguyên nhân, hệ quả, nguyên lý hoặc câu hỏi gợi mở; giữ tốc độ 2.5-3 từ/giây.\n"
+            "- Có thể đan xen khoảng lặng có chủ ý cho visual continuity và phải mô tả rõ trong scene_description.\n"
+            "- Không tự tạo sự kiện, hành động hoặc dữ kiện không xác minh được từ video nguồn.\n"
+            "\n"
+            "PACING PROFILES:\n"
+            "- FAST (3-5 giây/SRT): Chỉ dùng cho cao trào, hành động, thực địa hoặc phản ứng thời gian thực "
+            "khi hình ảnh cần bám sát chuyển động. Không dùng FAST làm mặc định cho toàn bộ video dài.\n"
+            "- MEDIUM (6-10 giây/SRT): Dùng cho kể chuyện, giải thích kỹ thuật và hội thoại. Có thể gom 2-3 "
+            "câu ngắn liên tiếp thành một block nếu cùng ngữ cảnh và đọc tự nhiên.\n"
+            "- COMPACT (10-15 giây/SRT): Dùng cho montage, historical archive, flashback, quảng cáo hoặc "
+            "chuỗi visual lặp. Duration dài phục vụ visual continuity, không có nghĩa phải nhồi nhiều chữ; "
+            "khoảng lặng có chủ ý là hợp lệ.\n"
+            "\n"
+            "LINEAR TIMELINE TRACKING:\n"
+            "- Ước tính tổng số SRT và video segment trong internal draft trước khi output.\n"
+            "- Kiểm tra index consumption và timeline coverage tại các mốc 25%, 50%, 75% và 100%.\n"
+            "- Tại mốc 50%, index consumption không được lệch quá +/-15 percentage points so với projection ban đầu.\n"
+            "- Nếu budget sắp cạn, phải compact các block early/mid chưa cần granular, chuyển profile phù hợp và "
+            "gộp visual liên tục; tuyệt đối không terminate JSON sớm hoặc cắt phần kết luận.\n"
+            "\n"
+            "CONTEXT WINDOW SAFETY:\n"
+            "- Không tạo index riêng cho các câu hoặc visual lặp lại nếu cùng một block kể chuyện có thể bao phủ chúng.\n"
+            "- Ưu tiên compact video_segments[] trước khi cắt nội dung rewrite_script.full_text.\n"
+            "- Giữ scene_description ngắn, khách quan và đủ xác minh; không lặp mô tả dài giữa các segment.\n"
+            "- Luôn dành đủ output budget cho SRT cuối, segment cuối và dấu đóng JSON.\n"
+        )
