@@ -40,16 +40,6 @@ def test_gemini_audit_disabled_does_not_write_full_payload(tmp_path, monkeypatch
     assert not (tmp_path / "audit-disabled").exists()
 
 
-def test_delete_current_conversation_requires_menu_delete_and_confirmation(monkeypatch):
-    service = GeminiAutomationService()
-    monkeypatch.setattr(service, "_click_active_conversation_menu", AsyncMock(return_value=(True, "active")))
-    clicks = AsyncMock(side_effect=["delete", "confirm"])
-    monkeypatch.setattr(service, "_click_first_visible", clicks)
-    monkeypatch.setattr(service, "_active_conversation_present", AsyncMock(return_value=False))
-
-    assert asyncio.run(service._delete_current_conversation(object())) is True
-
-
 def test_auto_pipeline_forces_headless_mode():
     import inspect
 

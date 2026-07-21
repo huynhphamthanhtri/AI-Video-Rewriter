@@ -84,31 +84,6 @@ GEMINI_SELECTORS = {
         "button:has(svg[data-icon='stop'])",
         "button:has(svg[aria-label='Stop'])",
     ],
-    "conversation_menu": [
-        "button[aria-label*='More']",
-        "button[aria-label*='more']",
-        "button[aria-label*='Thêm']",
-        "button[aria-label*='Tùy chọn']",
-        "[data-test-id*='conversation-menu']",
-    ],
-    "conversation_delete": [
-        "[role='menu'] [data-test-id='delete-button']",
-        "[data-test-id='delete-button']",
-        "[role='menuitem']:has-text('Delete')",
-        "[role='menuitem']:has-text('Xóa')",
-        "button:has-text('Delete')",
-        "button:has-text('Xóa')",
-        "[role='option']:has-text('Delete')",
-        "[role='option']:has-text('Xóa')",
-    ],
-    "conversation_delete_confirm": [
-        "[role='dialog'] gem-button[cdkfocusinitial] button",
-        "[role='dialog'] mat-dialog-actions gem-button:last-of-type button",
-        "button:has-text('Delete')",
-        "button:has-text('Xóa')",
-        "[role='dialog'] button:has-text('Delete')",
-        "[role='dialog'] button:has-text('Xóa')",
-    ],
     "sign_in_indicators": [
         "a[href*='signin']",
         "button:has-text('Sign in')",
@@ -1179,14 +1154,6 @@ class GeminiAutomationService:
                         public_error="Không thể hoàn tất xử lý. Vui lòng thử lại.",
                     )
                     return
-                task.update("cleanup_gemini", "Đang hoàn tất xử lý...")
-                if not await self._delete_current_conversation(page, task):
-                    task.mark_error(
-                        "GEMINI_CONVERSATION_CLEANUP_FAILED: không thể xác minh đã xóa phiên trò chuyện Gemini.",
-                        public_error="Không thể hoàn tất xử lý. Vui lòng thử lại.",
-                    )
-                    return
-
                 if dry_run:
                     await self._validate_without_render(task, json_str, render_payload)
                 else:
@@ -2154,123 +2121,6 @@ class GeminiAutomationService:
         except Exception:
             logger.exception("Failed to persist Gemini audit JSON for task %s", task.task_id)
             return False
-
-    async def _click_active_conversation_menu(self, page: Any) -> tuple[bool, str]:
-        current_path = urllib.parse.urlparse(page.url).path.rstrip("/")
-        if not current_path or current_path == "/app":
-            return False, "current URL has no conversation path"
-
-        links = page.locator("a[href*='/app/']")
-        link_count = await links.count()
-        for index in range(link_count):
-            link = links.nth(index)
-            href = await link.get_attribute("href")
-            if not href or urllib.parse.urlparse(href).path.rstrip("/") != current_path:
-                continue
-
-            ancestors = [
-                link.locator("xpath=ancestor::gem-nav-list-item[@data-test-id='conversation'][1]"),
-                link.locator("xpath=ancestor::*[@role='listitem'][1]"),
-                link.locator("xpath=ancestor::li[1]"),
-                link.locator("xpath=..").first,
-            ]
-            for item in ancestors:
-                try:
-                    if await item.count() == 0:
-                        continue
-                    await item.hover(timeout=3000)
-                    await asyncio.sleep(0.3)
-                except Exception:
-                    continue
-                selectors = [
-                    "gem-icon-button[data-test-id='actions-menu-button']",
-                    "[data-test-id='actions-menu-button'] button",
-                    ".gem-conversation-actions-menu-button button",
-                    *GEMINI_SELECTORS["conversation_menu"],
-                ]
-                for selector in selectors:
-                    menu = item.locator(selector).first
-                    try:
-                        if await menu.count() and await menu.is_visible(timeout=1000):
-                            await menu.click(timeout=5000)
-                            return True, f"active_path={current_path}; selector={selector}"
-                    except Exception:
-                        continue
-            return False, f"active conversation found but menu missing: {current_path}"
-
-        return False, f"active conversation link not found: {current_path}"
-
-    async def _save_cleanup_stage_diagnostic(self, task: GeminiAutomationTask | None, page: Any, stage: str) -> None:
-        if not task or not settings.gemini_audit_enabled:
-            return
-        try:
-            audit_dir = self._audit_task_dir(task)
-            audit_dir.mkdir(parents=True, exist_ok=True)
-            (audit_dir / f"cleanup_{stage}_dom.html").write_text(await page.content(), encoding="utf-8")
-            await page.screenshot(path=str(audit_dir / f"cleanup_{stage}.png"), full_page=True)
-        except Exception:
-            logger.exception("Failed to save Gemini cleanup %s diagnostic for task %s", stage, task.task_id)
-
-    async def _save_cleanup_diagnostic(self, task: GeminiAutomationTask, page: Any, reason: str) -> None:
-        logger.error("Gemini conversation cleanup failed for task %s: %s", task.task_id, reason)
-        if not settings.gemini_audit_enabled:
-            return
-        try:
-            audit_dir = self._audit_task_dir(task)
-            audit_dir.mkdir(parents=True, exist_ok=True)
-            (audit_dir / "cleanup_failure.json").write_text(
-                json.dumps({"reason": reason, "url": page.url, "created_at": time.time()}, ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-            try:
-                (audit_dir / "cleanup_failure_dom.html").write_text(await page.content(), encoding="utf-8")
-            except Exception:
-                pass
-            try:
-                await page.screenshot(path=str(audit_dir / "cleanup_failure.png"), full_page=True)
-            except Exception:
-                pass
-        except Exception:
-            logger.exception("Failed to save Gemini cleanup diagnostic for task %s", task.task_id)
-
-    async def _delete_current_conversation(self, page: Any, task: GeminiAutomationTask | None = None) -> bool:
-        """Delete the active conversation through the matching sidebar item."""
-        opened, detail = await self._click_active_conversation_menu(page)
-        if not opened:
-            if task:
-                await self._save_cleanup_diagnostic(task, page, detail)
-            return False
-
-        await self._save_cleanup_stage_diagnostic(task, page, "menu_open")
-
-        delete_selector = await self._click_first_visible(page, GEMINI_SELECTORS["conversation_delete"], timeout_ms=5000)
-        if not delete_selector:
-            if task:
-                await self._save_cleanup_diagnostic(task, page, f"delete action not found; {detail}")
-            return False
-        await asyncio.sleep(0.5)
-        await self._save_cleanup_stage_diagnostic(task, page, "delete_clicked")
-        confirm_selector = await self._click_first_visible(page, GEMINI_SELECTORS["conversation_delete_confirm"], timeout_ms=5000)
-        if not confirm_selector:
-            if task:
-                await self._save_cleanup_diagnostic(task, page, f"confirmation not found; {detail}")
-            return False
-
-        await asyncio.sleep(1.5)
-        if await self._active_conversation_present(page):
-            if task:
-                await self._save_cleanup_diagnostic(task, page, f"conversation still present; {detail}")
-            return False
-        return True
-
-    async def _active_conversation_present(self, page: Any) -> bool:
-        current_path = urllib.parse.urlparse(page.url).path.rstrip("/")
-        links = page.locator("a[href*='/app/']")
-        for index in range(await links.count()):
-            href = await links.nth(index).get_attribute("href")
-            if href and urllib.parse.urlparse(href).path.rstrip("/") == current_path:
-                return True
-        return False
 
     async def _click_google_account_if_available(self, page: Any) -> str | None:
         selectors = [
