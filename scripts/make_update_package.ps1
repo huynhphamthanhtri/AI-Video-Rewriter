@@ -238,11 +238,10 @@ $manifestContent = @{
     download_url          = "https://github.com/huynhphamthanhtri/MrTris_AUTO_RELEASES/releases/download/v$TargetVersion/$zipName"
     sha256                = $hash
     notes                 = @(
-        "v1.0.11 Increase TTS Studio limit, add update notifications, and clean up Maintenance UI",
-        "New: Increase TTS Studio text limit from 10000 to 30000 characters",
-        "New: Notify users when a newer version is available and show a Maintenance tab badge",
-        "UI: Remove Hardware ID and Runtime Health from the Maintenance panel",
-        "UI: Vietnamese localization for License controls"
+        "v1.0.14 Remove conversation cleanup (no longer fails task) + UI select Gemini model (3.6 Flash, 3.5 Flash-Lite, 3.1 Pro)",
+        "Fix: Remove conversation delete - cleanup no longer fails task when Gemini response is valid",
+        "New: UI to select Gemini model (default 3.6 Flash, also 3.5 Flash-Lite, 3.1 Pro)",
+        "Fix: Gemini timeout reduced from 900s to 180s"
     )
 }
 $Utf8NoBom = New-Object System.Text.UTF8Encoding $false
