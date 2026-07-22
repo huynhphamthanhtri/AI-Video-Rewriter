@@ -160,6 +160,7 @@ class GeminiAutoSubmitRequest(BaseModel):
     output_dir_path: str | None = None
     headless: bool = True
     gemini_thinking_mode: Literal["standard", "extended"] = "extended"
+    gemini_model: str = "gemini-3.6-flash"
     gemini_dry_run: bool = False
 
 

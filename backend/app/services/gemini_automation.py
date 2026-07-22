@@ -124,14 +124,32 @@ GEMINI_SELECTORS = {
     "model_picker_button": [
         "[data-test-id='bard-mode-menu-button']",
     ],
-    "model_option_35_flash": [
-        "[role='menuitem']:has-text('3.5 Flash')",
-        "//*[@role='menuitem' and contains(., '3.5 Flash')]",
-    ],
     "model_verify": [
         "span.picker-primary-text",
     ],
 }
+
+GEMINI_MODEL_OPTIONS: tuple[dict[str, Any], ...] = (
+    {
+        "key": "gemini-3.6-flash",
+        "label": "3.6 Flash",
+        "aliases": ("3.6 Flash",),
+    },
+    {
+        "key": "gemini-3.5-flash-lite",
+        "label": "3.5 Flash-Lite",
+        "aliases": ("3.5 Flash-Lite",),
+    },
+    {
+        "key": "gemini-3.1-pro",
+        "label": "3.1 Pro",
+        "aliases": ("3.1 Pro",),
+    },
+)
+
+DEFAULT_GEMINI_MODEL = "gemini-3.6-flash"
+
+_MODEL_BY_KEY: dict[str, dict[str, Any]] = {opt["key"]: opt for opt in GEMINI_MODEL_OPTIONS}
 
 GEMINI_THINKING_MODE_LABELS: dict[str, list[str]] = {
     "extended": ["Mở rộng", "Extended"],
@@ -154,6 +172,7 @@ class GeminiAutomationTask:
         self.result: dict | None = None
         self.error: str | None = None
         self.cancel_requested = False
+        self.gemini_model: str = DEFAULT_GEMINI_MODEL
         self.telemetry = PipelineTelemetry()
         self._render_job_id: str | None = None
         self._context: Any = None
@@ -842,9 +861,11 @@ class GeminiAutomationService:
 
     def start(self, task_id: str, prompt_text: str, render_payload: dict, user_data_dir: str | None = None,
               headless: bool | None = None, thinking_mode: str = "extended",
+              model: str = DEFAULT_GEMINI_MODEL,
               form_data: dict | None = None,
               dry_run: bool = False) -> GeminiAutomationTask:
         task = GeminiAutomationTask(task_id)
+        task.gemini_model = model
         self._tasks[task_id] = task
         ud = user_data_dir or self._get_user_data_dir()
         asyncio.create_task(self._run_pipeline(task, prompt_text, render_payload, ud, headless, thinking_mode, form_data, dry_run))
@@ -884,6 +905,7 @@ class GeminiAutomationService:
                             user_data_dir: str | None = None, headless: bool | None = None,
                             thinking_mode: str = "extended",
                             form_data: dict | None = None, dry_run: bool = False) -> None:
+        # model is already set on task.gemini_model by start()
         browser = None
         context = None
         # Auto Pipeline never exposes its working browser. Interactive login is
@@ -2229,6 +2251,47 @@ class GeminiAutomationService:
                 pass
         return None
 
+    async def _select_model(self, page: Any, model_key: str) -> bool:
+        entry = _MODEL_BY_KEY.get(model_key)
+        if not entry:
+            logger.warning("Unknown model key: %s", model_key)
+            return False
+        try:
+            await page.wait_for_selector("[role='menuitem']", timeout=5000)
+        except Exception:
+            pass
+        items = page.locator("[role='menuitem']")
+        count = await items.count()
+        matched = None
+        for i in range(count):
+            raw = (await items.nth(i).text_content() or "").strip()
+            norm = " ".join(raw.split()).replace("Mới", " ").strip()
+            for alias in entry["aliases"]:
+                if norm.startswith(alias) or norm.startswith(alias.replace(" ", "")):
+                    matched = items.nth(i)
+                    break
+            if matched:
+                break
+        if not matched:
+            logger.warning("Model '%s' not found in picker menuitems (key=%s)", entry["label"], model_key)
+            return False
+        await matched.click(force=True, timeout=3000)
+        await asyncio.sleep(1.5)
+        try:
+            pill = page.locator(GEMINI_SELECTORS["model_pill"][0]).first
+            if await pill.count() > 0:
+                pill_text = (await pill.text_content() or "").strip()
+                prefix = entry["label"].split()[0]
+                if prefix in pill_text:
+                    logger.info("Model '%s' selected and verified", entry["label"])
+                    return True
+                logger.warning("Model pill mismatch: expected prefix '%s', got '%s'", prefix, pill_text)
+            else:
+                logger.warning("No model pill found for verification")
+        except Exception as e:
+            logger.warning("Model verification exception: %s", e)
+        return False
+
     async def _submit_prompt(self, task: GeminiAutomationTask, page: Any, context: Any, prompt_text: str,
                              thinking_mode: str = "extended") -> None:
         task.update("submitting_prompt", "Đang tìm ô nhập prompt...")
@@ -2366,23 +2429,13 @@ class GeminiAutomationService:
             except Exception as e:
                 logger.warning("Failed to set thinking level (old approach): %s", e)
 
-        # ── Step 3: Select "3.5 Flash" model ──
+        # ── Step 3: Select model ──
         if model_picker_opened:
-            try:
-                model_item = page.locator(GEMINI_SELECTORS["model_option_35_flash"][0]).first
-                if await model_item.count() == 0:
-                    for fallback in GEMINI_SELECTORS["model_option_35_flash"][1:]:
-                        fb_item = page.locator(fallback).first
-                        if await fb_item.count() > 0:
-                            await fb_item.click(force=True, timeout=3000)
-                            logger.info("Selected 3.5 Flash model via fallback: %s", fallback)
-                            break
-                else:
-                    await model_item.click(force=True, timeout=3000)
-                    await asyncio.sleep(0.5)
-                    logger.info("Selected 3.5 Flash model")
-            except Exception as e:
-                logger.warning("Failed to select model: %s", e)
+            if not await self._select_model(page, task.gemini_model):
+                task.mark_error(
+                    f"GEMINI_MODEL_SELECTION_FAILED: không tìm thấy hoặc verify được model '{task.gemini_model}' trong Gemini picker.",
+                )
+                return
 
         # ── Wait for any post-model-change navigation to settle ──
         try:

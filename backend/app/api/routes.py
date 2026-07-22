@@ -47,7 +47,7 @@ from app.services.video_tools import RenderPipeline, SubtitleBurner, TitleOverla
 from app.services.tts_tools import TtsVoiceoverService, create_clone_voice, generate_standalone_tts, list_cloned_voices, list_edge_tts_voices, preview_builtin_voice, preview_clone_voice, tts_clones_dir, edge_tts_status, TTS_PREVIEWS_DIR, tts_studio_outputs_dir
 from app.services.license_service import LicenseError, LicenseService
 from app.services.updater_service import UpdaterError, compare_versions, get_local_version, get_remote_manifest, launch_updater
-from app.services.gemini_automation import gemini_service, GeminiAutomationService
+from app.services.gemini_automation import gemini_service, GeminiAutomationService, GEMINI_MODEL_OPTIONS, DEFAULT_GEMINI_MODEL
 from app.services.batch_pipeline import batch_service
 from app.schemas.prompt import GeminiAutoSubmitRequest, GeminiAutoSubmitResponse, GeminiAutoSubmitStatusResponse
 
@@ -1766,6 +1766,19 @@ batch_service.set_render_status_getter(_get_render_status_for_batch)
 batch_service.set_cancel_render_fn(_cancel_render_job_immediately)
 
 
+class GeminiModelsResponse(BaseModel):
+    default_model: str
+    models: list[dict[str, str]]
+
+
+@router.get("/gemini/models", response_model=GeminiModelsResponse)
+def gemini_models():
+    return GeminiModelsResponse(
+        default_model=DEFAULT_GEMINI_MODEL,
+        models=[{"key": m["key"], "label": m["label"]} for m in GEMINI_MODEL_OPTIONS],
+    )
+
+
 @router.post("/gemini/auto-submit", response_model=GeminiAutoSubmitResponse)
 async def gemini_auto_submit(payload: GeminiAutoSubmitRequest):
     form_data = payload.form_data
@@ -1830,6 +1843,7 @@ async def gemini_auto_submit(payload: GeminiAutoSubmitRequest):
 
     gemini_service.start(task_id, prompt, render_payload, payload.user_data_dir, headless=payload.headless,
                           thinking_mode=payload.gemini_thinking_mode,
+                          model=payload.gemini_model,
                           form_data=form_data,
                           dry_run=payload.gemini_dry_run)
     return GeminiAutoSubmitResponse(task_id=task_id, prompt_text=prompt)
@@ -1889,6 +1903,7 @@ async def gemini_batch_auto_submit(payload: GeminiAutoSubmitRequest):
             user_data_dir=payload.user_data_dir,
             headless=payload.headless,
             gemini_thinking_mode=payload.gemini_thinking_mode,
+            gemini_model=payload.gemini_model,
         )
         return BatchAutoSubmitResponse(**batch.model_dump())
     except ValueError as exc:

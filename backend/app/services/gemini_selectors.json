@@ -1,13 +1,7 @@
 {
   "model_selector": "[data-test-id=\"bard-mode-menu-button\"]",
-  "model_current_text": "3.5 Flash Trợ giúp toàn diện",
+  "model_current_text": "3.5 Flash-Lite Câu trả lời nhanh nhất",
   "model_options_raw": [
-    {
-      "text": "Nâng cấp",
-      "data_test_id": "bard-g1-dynamic-upsell-menu-button",
-      "role": "link",
-      "class": "mdc-button mat-mdc-button-base mdc-button--unelevated mat-mdc-unelevated-button gds-button-tonal mat"
-    },
     {
       "text": "Sổ ghi chú",
       "data_test_id": "expandable-section-toggle",
@@ -21,35 +15,35 @@
       "class": "expandable-section-header"
     },
     {
-      "text": "Flash",
+      "text": "Flash-Lite",
       "data_test_id": "bard-mode-menu-button",
       "role": "",
       "class": "mdc-button mat-mdc-button-base input-area-switch mat-mdc-button mat-unthemed pressed"
     },
     {
-      "text": "3.1 Flash-Lite Câu trả lời nhanh nhất",
-      "data_test_id": "bard-mode-option-cf41b0e0dd7d53e5",
-      "role": "menuitem",
-      "class": "ng-star-inserted"
-    },
-    {
-      "text": "3.5 Flash Trợ giúp toàn diện",
-      "data_test_id": "bard-mode-option-fbb127bbb056c959",
+      "text": "3.5 Flash-Lite Câu trả lời nhanh nhất",
+      "data_test_id": "bard-mode-option-8c46e95b1a07cecc",
       "role": "menuitem",
       "class": "selected ng-star-inserted"
     },
     {
-      "text": "3.1 Pro Toán học và lập trình nâng cao",
-      "data_test_id": "bard-mode-option-9d8ca3786ebdfbea",
+      "text": "3.6 Flash Trợ giúp toàn diệnMới",
+      "data_test_id": "bard-mode-option-56fdd199312815e2",
       "role": "menuitem",
       "class": "ng-star-inserted"
     },
     {
-      "text": "Cấp độ tư duy Tiêu chuẩn",
+      "text": "3.1 Pro Toán học và lập trình nâng cao",
+      "data_test_id": "bard-mode-option-e6fa609c3fa255c0",
+      "role": "menuitem",
+      "class": "ng-star-inserted"
+    },
+    {
+      "text": "Tư duy mở rộng Giải quyết vấn đề phức tạp",
       "data_test_id": "",
       "role": "menuitem",
       "class": "ng-star-inserted"
     }
   ],
-  "discovered_at": "2026-06-28T01:30:04"
+  "discovered_at": "2026-07-22T11:52:49"
 }

@@ -133,9 +133,9 @@ async def discover():
         page.set_default_timeout(30000)
 
         print(f"Navigating to {settings.gemini_url} ...")
-        await page.goto(settings.gemini_url, wait_until="domcontentloaded")
-        await page.wait_for_load_state("networkidle")
-        await page.wait_for_timeout(5000)
+        await page.goto(settings.gemini_url, wait_until="load", timeout=60000)
+        # wait for page to settle — networkidle can hang on Gemini's persistent connections
+        await page.wait_for_timeout(10000)
 
         # ─────────────────────────────────────────────────────
         # DISCOVERY PHASE 1: Find the model selector button

@@ -4,7 +4,7 @@ import { Toaster, toast } from 'sonner';
 
 import { Bell, Copy, Download, ExternalLink, Film, FolderOpen, KeyRound, Loader2, Play, Plus, Sparkles, Trash2, Upload, Wand2 } from 'lucide-react';
 
-import { activateLicense, applyRenderJobBlur, blurPreviewUrl, cancelAutoPipeline, cancelBatch, checkForUpdates, cleanupFinalVideos, cleanupStorage, clearLicense, connectAutoPipelineWS, deleteSavedCookies, fetchAutoPipelineStatus, fetchBatchProgress, fetchFinalVideosPath, fetchGeminiSessionStatus, fetchLicenseStatus, fetchRenderJob, fetchRenderPreferences, fetchRuntimeHealth, fetchSavedCookies, fetchStorageStats, fetchTtsStatus, fetchTtsVoices, fileDownloadUrl, launchUpdater, openGeminiBrowser, openOutputFolder, saveRenderPreferences, skipRenderJobBlur, startAutoPipeline, startBatchAutoPipeline, startRenderJob, unbindLicenseDevice, uploadCookies } from './api';
+import { activateLicense, applyRenderJobBlur, blurPreviewUrl, cancelAutoPipeline, cancelBatch, checkForUpdates, cleanupFinalVideos, cleanupStorage, clearLicense, connectAutoPipelineWS, deleteSavedCookies, fetchAutoPipelineStatus, fetchBatchProgress, fetchFinalVideosPath, fetchGeminiModels, fetchGeminiSessionStatus, fetchLicenseStatus, fetchRenderJob, fetchRenderPreferences, fetchRuntimeHealth, fetchSavedCookies, fetchStorageStats, fetchTtsStatus, fetchTtsVoices, fileDownloadUrl, launchUpdater, openGeminiBrowser, openOutputFolder, saveRenderPreferences, skipRenderJobBlur, startAutoPipeline, startBatchAutoPipeline, startRenderJob, unbindLicenseDevice, uploadCookies } from './api';
 import { BlurRegionEditor, BlurRegionSidebar, BlurTool } from './components/BlurTool';
 
 import { AutoPipelineProgress } from './components/AutoPipelineProgress';
@@ -27,7 +27,7 @@ import { TtsStudioPanel } from './components/TtsStudioPanel';
 import { targetLanguageOptions } from './constants/options';
 
 
-import type { AutoPipelineProgress as AutoPipelineProgressData, BatchProgress, BlurRegion, GeminiEdlPayload, GeminiSessionStatus, GeminiThinkingMode, LicenseStatus, OutputResolution, PromptForm, RenderJobStatus, RenderOptions, RenderQuality, RuntimeHealth, StorageCleanupResponse, StorageStats, SubtitleMode, TtsVoice, UpdateCheckResponse, VerticalMode } from './types';
+import type { AutoPipelineProgress as AutoPipelineProgressData, BatchProgress, BlurRegion, GeminiEdlPayload, GeminiModelOption, GeminiModelsResponse, GeminiSessionStatus, GeminiThinkingMode, LicenseStatus, OutputResolution, PromptForm, RenderJobStatus, RenderOptions, RenderQuality, RuntimeHealth, StorageCleanupResponse, StorageStats, SubtitleMode, TtsVoice, UpdateCheckResponse, VerticalMode } from './types';
 import type { BlurRegionLocal } from './components/BlurTool';
 
 import { downloadTextFile } from './utils/download';
@@ -346,6 +346,8 @@ export function App() {
 
   const [geminiUserDataDir, setGeminiUserDataDir] = useState<string | null>(null);
   const [geminiThinkingMode, setGeminiThinkingMode] = useState<GeminiThinkingMode>('extended');
+  const [geminiModel, setGeminiModel] = useState('gemini-3.6-flash');
+  const [geminiModelOptions, setGeminiModelOptions] = useState<GeminiModelOption[]>([]);
 
   const [isOpeningBrowser, setIsOpeningBrowser] = useState(false);
   const disconnectAutoPipelineWS = useRef<(() => void) | null>(null);
@@ -362,7 +364,17 @@ export function App() {
 
   const [finalVideosPath, setFinalVideosPath] = useState<string | null>(null);
 
-  useEffect(() => { void loadSavedCookies(); void loadRenderPreferences(); void loadLicenseStatus(); void loadGeminiSessionStatus(); void fetchFinalVideosPath().then(setFinalVideosPath).catch(() => {}); }, []);
+  useEffect(() => {
+    void loadSavedCookies();
+    void loadRenderPreferences();
+    void loadLicenseStatus();
+    void loadGeminiSessionStatus();
+    void fetchGeminiModels().then((r: GeminiModelsResponse) => {
+      setGeminiModelOptions(r.models);
+      setGeminiModel(r.default_model);
+    }).catch(() => {});
+    void fetchFinalVideosPath().then(setFinalVideosPath).catch(() => {});
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -870,6 +882,7 @@ export function App() {
           user_data_dir: geminiUserDataDir || undefined,
           headless: true,
           gemini_thinking_mode: geminiThinkingMode,
+          gemini_model: geminiModel,
 
         });
 
@@ -924,7 +937,7 @@ export function App() {
 
 
 
-      const res = await startAutoPipeline({ form_data: formPayload, ...renderPayload, headless: true, gemini_thinking_mode: geminiThinkingMode });
+      const res = await startAutoPipeline({ form_data: formPayload, ...renderPayload, headless: true, gemini_thinking_mode: geminiThinkingMode, gemini_model: geminiModel });
 
       setAutoPipelineProgress((prev: AutoPipelineProgressData | null) => prev ? { ...prev, task_id: res.task_id } : null);
 
@@ -1338,7 +1351,15 @@ function LicenseGate({ licenseStatus, onActivate, onRefresh }: { licenseStatus: 
                 })()}
 
                 <div className="flex items-center gap-2 text-xs text-slate-300">
-                  <span>Gemini thinking</span>
+                  <span>Model</span>
+                  <select className="select-ghost h-8 py-1 text-xs" value={geminiModel} onChange={e => setGeminiModel(e.target.value)} disabled={isAutoPipelineRunning || !geminiModelOptions.length}>
+                    {geminiModelOptions.map(m => (
+                      <option key={m.key} value={m.key}>{m.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-slate-300">
+                  <span>Thinking</span>
                   <select className="select-ghost h-8 py-1 text-xs" value={geminiThinkingMode} onChange={e => setGeminiThinkingMode(e.target.value as GeminiThinkingMode)} disabled={isAutoPipelineRunning}>
                     <option value="extended">Mở rộng / Extended</option>
                     <option value="standard">Tiêu chuẩn / Standard</option>

@@ -404,6 +404,16 @@ export type GeminiSessionStatus = {
 
 export type GeminiThinkingMode = 'standard' | 'extended';
 
+export type GeminiModelOption = {
+  key: string;
+  label: string;
+};
+
+export type GeminiModelsResponse = {
+  default_model: string;
+  models: GeminiModelOption[];
+};
+
 export type GeminiOpenBrowserResponse = {
   browser_id: string;
   message: string;

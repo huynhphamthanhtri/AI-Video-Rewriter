@@ -1,4 +1,4 @@
-import type { AutoPipelineProgress, BatchProgress, BlurRegion, BlurRenderResponse, BlurUploadResponse, GeminiAutoSubmitResponse, GeminiOpenBrowserResponse, GeminiSessionStatus, LicenseStatus, Preset, PresetCompareResponse, PresetRecommendResponse, PresetSyncStatus, PromptHealthResponse, PromptPreviewResponse, PromptRunStats, RenderJobStatus, RenderOptions, RuntimeHealth, StorageCleanupResponse, StorageStats, SubtitlePreviewStyleResponse, TitleLayoutPreviewResponse, TtsVoice, UpdateCheckResponse, UpdateLaunchResponse, ValidateJsonResponse } from './types';
+import type { AutoPipelineProgress, BatchProgress, BlurRegion, BlurRenderResponse, BlurUploadResponse, GeminiAutoSubmitResponse, GeminiModelsResponse, GeminiOpenBrowserResponse, GeminiSessionStatus, LicenseStatus, Preset, PresetCompareResponse, PresetRecommendResponse, PresetSyncStatus, PromptHealthResponse, PromptPreviewResponse, PromptRunStats, RenderJobStatus, RenderOptions, RuntimeHealth, StorageCleanupResponse, StorageStats, SubtitlePreviewStyleResponse, TitleLayoutPreviewResponse, TtsVoice, UpdateCheckResponse, UpdateLaunchResponse, ValidateJsonResponse } from './types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '/api';
 const USE_MOCK = import.meta.env.VITE_USE_MOCK_API === 'true';
@@ -586,6 +586,12 @@ export async function openGeminiBrowser(userDataDir?: string): Promise<GeminiOpe
     body: JSON.stringify({ user_data_dir: userDataDir ?? null }),
   });
   if (!res.ok) throw new Error(await parseError(res, 'Không thể mở trình duyệt Gemini.'));
+  return res.json();
+}
+
+export async function fetchGeminiModels(): Promise<GeminiModelsResponse> {
+  const res = await fetch(`${API_BASE}/gemini/models`);
+  if (!res.ok) throw new Error(await parseError(res, 'Không thể tải danh sách model Gemini.'));
   return res.json();
 }
 

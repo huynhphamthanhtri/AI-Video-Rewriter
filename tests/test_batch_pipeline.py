@@ -58,6 +58,7 @@ class FakeAutomationService:
 
     def start(self, task_id: str, prompt_text: str, render_payload: dict, user_data_dir: str | None = None,
               headless: bool | None = None, thinking_mode: str = "extended",
+              model: str = "gemini-3.6-flash",
               form_data: dict | None = None):
         self.last_render_payload = render_payload
         url = render_payload["youtube_url"]
@@ -298,6 +299,7 @@ def test_single_auto_submit_function_uses_existing_service(monkeypatch):
 
     def fake_start(task_id: str, prompt_text: str, render_payload: dict, user_data_dir: str | None = None,
                     headless: bool | None = None, thinking_mode: str = "extended",
+                    model: str = "gemini-3.6-flash",
                     form_data: dict | None = None,
                     dry_run: bool = False):
         calls.append({"single": {"task_id": task_id, "prompt_text": prompt_text, "render_payload": render_payload, "dry_run": dry_run}})

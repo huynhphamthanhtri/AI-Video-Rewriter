@@ -107,6 +107,7 @@ class BatchPipelineService:
         user_data_dir: str | None = None,
         headless: bool | None = None,
         gemini_thinking_mode: str = "extended",
+        gemini_model: str = "gemini-3.6-flash",
     ) -> BatchProgress:
         urls = self._extract_urls(form_data)
         batch_id = str(uuid.uuid4())
@@ -127,6 +128,7 @@ class BatchPipelineService:
             "user_data_dir": user_data_dir,
             "headless": headless,
             "gemini_thinking_mode": gemini_thinking_mode,
+            "gemini_model": gemini_model,
         }
         self._run_configs[batch_id] = run_config
         self._persist()
@@ -194,6 +196,7 @@ class BatchPipelineService:
         user_data_dir: str | None,
         headless: bool | None = None,
         gemini_thinking_mode: str = "extended",
+        gemini_model: str = "gemini-3.6-flash",
     ) -> None:
         batch = self._batches[batch_id]
         batch.status = "running"
@@ -218,6 +221,7 @@ class BatchPipelineService:
                     user_data_dir=user_data_dir,
                     headless=headless,
                     gemini_thinking_mode=gemini_thinking_mode,
+                    gemini_model=gemini_model,
                 )
                 self._persist()
             self._finish_batch(batch)
@@ -245,6 +249,7 @@ class BatchPipelineService:
         user_data_dir: str | None,
         headless: bool | None = None,
         gemini_thinking_mode: str = "extended",
+        gemini_model: str = "gemini-3.6-flash",
     ) -> None:
         item.status = "running"
         item.started_at = time.time()
@@ -272,6 +277,7 @@ class BatchPipelineService:
             task_id = str(uuid.uuid4())
             task = self.automation_service.start(task_id, prompt, render_payload, user_data_dir, headless=headless,
                                                       thinking_mode=gemini_thinking_mode,
+                                                      model=gemini_model,
                                                       form_data=item_form)
             item.task_id = task_id
             self._persist()
